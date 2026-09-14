@@ -1,0 +1,116 @@
+---
+# Measure __GMT_VAR_PAGE__ in a headful Chromium driven by Playwright, with a
+# warm caching proxy in front of it.
+#
+# This is GMT's templates/website/usage_scenario_cached.yml - the webnrg
+# benchmark - with three deliberate changes, all of them made so that this
+# scenario and parrot/usage_scenario.yml measure the same thing:
+#
+#   1. Chromium instead of Firefox, and headful instead of headless.
+#   2. The measured idle is 30 s rather than 5 s.
+#   3. The scroll phase is a fixed 5 s of wheel ticks rather than a loop that
+#      runs until the bottom of the page, so that both scenarios scroll for the
+#      same amount of time on every site.
+#
+# The sibling scenario in this repository drives a real Google Chrome through
+# real X input instead of through Playwright. See the repository README for
+# what is and is not comparable between the two.
+#
+# RUN IT WITH (one variable, the page):
+#
+#    runner.py \
+#     --uri /home/didi/code/1000-websites \
+#     --filename playwright/usage_scenario.yml \
+#     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --dev-no-sleeps --dev-no-system-checks=check_ssh_session
+#
+name: "__GMT_VAR_PAGE__ - 1000 Websites Playwright Chrome"
+author: Didi Hoffmann <didi@green-coding.io>
+description: "Opens __GMT_VAR_PAGE__ in a headful Chromium from a warm proxy cache, idles 30 s, then scrolls for 5 s"
+
+custom_metrics:
+  website_load:
+    unit: Website Load and Idle Cached
+    sci: True
+
+compose-file: !include-gmt-helper gmt-playwright-with-cache.yml
+
+flow-prepend:
+  - name: Starting browser IPC
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: console
+        command: xvfb-run -a -s "-screen 0 1440x900x24" node /tmp/gmt-utils/gmt-playwright-ipc.js --headless false --browser chromium --proxy http://squid:3128
+        shell: bash
+        note: Starting headful Chromium in background process with IPC
+        detach: true
+      - type: console
+        command: timeout 60 bash -c 'until [ -p "/tmp/playwright-ipc-ready" ]; do sleep 1; done && echo "Browser ready!"'
+        shell: bash
+        note: Waiting for the browser to signal readiness on the rendezvous FIFO
+
+flow:
+  - name: Warmup and Caching
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: await gmtPlaywrightCache("__GMT_VAR_PAGE__", 20);
+
+  # 1432x809 was MEASURED, not chosen: it is exactly what
+  # window.innerWidth/innerHeight report in the Parrot scenario's Chrome, whose
+  # window fluxbox pins to 1440x900 with no decorations. 900 minus 91 px of tab
+  # strip and toolbar, and 1440 minus the 8 px a real Chrome reserves for its
+  # vertical scrollbar.
+  #
+  # Those 8 px are why this is not 1440: Playwright resizes a headful viewport
+  # with Emulation.setDeviceMetricsOverride, and an emulated viewport gets
+  # overlay scrollbars that take no layout width, so asking for 1440 would hand
+  # the page 8 CSS px more than Parrot does.
+  #
+  # A step of its own because gmtPlaywrightCache() replaces the context and
+  # therefore the page, and the new page comes back at the 1280x800 hard-coded
+  # in gmt-playwright-ipc.js.
+  - name: Match the Parrot viewport
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: 'await page.setViewportSize({ width: 1432, height: 809 });'
+
+  - name: Visit page and idle for 30 s
+    container: gmt-playwright-nodejs
+    commands:
+      - type: playwright
+        command: page_result = await page.goto("__GMT_VAR_PAGE__");
+      - type: console
+        command: sleep 30
+      - type: console
+        command: echo $(date +%s%N) website_load=1
+        shell: bash
+
+  - name: Check HTTP Status Code
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: if (!page_result.ok()) throw `Page was not accessible. HTTP Return code ${page_result.status()}`
+
+  # 25 ticks 200 ms apart is 5 s, the same 25 ticks at the same spacing that
+  # parrot/chrome/scroll.parrot performs with X button 5. 120 px per tick is
+  # measured too: one X wheel-down tick moves Chrome exactly 120 px, so both
+  # scenarios travel 3000 px. The GMT template's 200 would travel 5000.
+  #
+  # No "stop at the bottom" check, unlike the template: ending early on a short
+  # page would make the phase a different length on every site.
+  #
+  # The pointer is moved to the middle of the viewport first because that is
+  # where the Parrot macro puts it, and a wheel event goes to what is under it.
+  - name: Scroll down and wait 5 s
+    container: gmt-playwright-nodejs
+    commands:
+      - type: playwright
+        command: await page.mouse.move(720, 400);
+      - type: playwright
+        command: for (let i = 0; i < 25; i++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(200); }

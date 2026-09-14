@@ -1,0 +1,162 @@
+---
+# Measure __GMT_VAR_PAGE__ in a real Chrome, driven by Parrot, with a warm
+# caching proxy in front of it.
+#
+# This is GMT's templates/website/usage_scenario_cached.yml with the Playwright
+# browser replaced by a real one: same squid cache, same "load the page, idle
+# 30 s, then scroll for 5 s" shape, same __GMT_VAR_PAGE__ variable. The
+# repository README says what changed and why, and what is and is not comparable
+# against the Playwright scenario next to it.
+#
+# RUN IT WITH (one variable, the page):
+#
+#   ./runner.py \
+#     --uri /home/didi/code/1000-websites \
+#     --filename parrot/usage_scenario.yml \
+#     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --allow-unsafe --dev-no-sleeps --dev-no-system-checks=check_ssh_session
+#
+# --allow-unsafe is needed in CLI mode ONLY, and only because of docker-run-args
+# below. For a production run, allowlist --shm-size=1g under
+# capabilities.measurement.orchestrators.docker.allowed_run_args instead.
+name: "__GMT_VAR_PAGE__ - 1000 Websites Parrot Chrome"
+author: Didi <didi@green-coding.io>
+description: "Opens __GMT_VAR_PAGE__ in a real Chrome from a warm proxy cache, idles 30 s, then scrolls for 5 s"
+
+custom_metrics:
+  website_load:
+    unit: Website Load and Idle Cached
+    sci: True
+
+services:
+  squid:
+    image: greencoding/squid_reverse_proxy:v5
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "--proxy", "http://squid:3128", "https://www.google.com", "--insecure"]
+      interval: "1h" # effectively turns repeated healthchecks during runtime off
+      start_period: "60s"
+      start_interval: "1s"
+
+  window-container:
+    image: ribalba/parrot-browsers:v1
+    depends_on:
+      - squid
+    # ports:
+    #   - "6080:6080" # noVNC (open in browser)
+    #   - "5900:5900" # raw VNC
+    environment:
+      # DEBUG: 1
+      #
+      # The page under test. Every script in parrot/common/ reads it from
+      # here, and launch-browser.sh passes it to Chrome as --homepage, which is
+      # what the measured Alt+Home navigates to.
+      PARROT_URL: __GMT_VAR_PAGE__
+      # Two different consumers, so both are set explicitly rather than left to
+      # collide by coincidence: entrypoint.sh sizes the Xvfb framebuffer from
+      # SCREEN_SIZE, position-window.sh clamps to RESOLUTION. They default to
+      # the same 1440x900 today, and changing one alone would silently give the
+      # page a viewport that no longer matches the Playwright scenario's.
+      SCREEN_SIZE: 1440x900x24
+      RESOLUTION: 1440x900
+      # position-window.sh reads these. Without them it falls back to its demo
+      # defaults - 1400x857 at 20,20 - and would resize the window that
+      # pin-windows.sh has already pinned to 1440x900 at 0,0, on every replay.
+      WINDOW_X: 0
+      WINDOW_Y: 0
+      WINDOW_WIDTH: 1440
+      WINDOW_HEIGHT: 900
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    # Kept, although Chrome no longer depends on it. Docker's default /dev/shm
+    # is 64 MB and Chrome maps shared memory for every surface it composites:
+    # measured here on an ordinary site, before common/launch-browser.sh passed
+    # --disable-dev-shm-usage, the renderer died and the tab showed "Aw, Snap!
+    # Error code: SIGTRAP". The failure mode is the one this repository cares
+    # about - the phase still runs, still takes 5 s and still produces an energy
+    # figure, for a browser that is showing a crash page.
+    #
+    # launch-browser.sh now passes that switch because Playwright always does,
+    # and with it Chrome creates its shared memory files in /tmp instead.
+    # Measured in this image: 62 of them open under /dev/shm without the switch,
+    # none with it. The 1 GB stays so that dropping the switch again cannot
+    # bring the crash back unnoticed.
+    docker-run-args:
+      - --shm-size=1g
+
+    setup-commands:
+      # For Chrome this only imports the proxy's CA into ~/.pki/nssdb and
+      # creates the profile directory. The proxy and the home page are on
+      # Chrome's command line in common/launch-browser.sh, because Chrome
+      # protects the homepage preference with a MAC and reverts values it did
+      # not write itself.
+      - command: bash /tmp/repo/parrot/common/setup-profile.sh chrome /tmp/parrot-profile-measure
+      # Chrome is pinned by res_CLASS with an EMPTY res_name. Its res_name
+      # embeds the profile path - "chromium-browser (/tmp/parrot-profile-measure)"
+      # - and fluxbox matches these patterns in full, so a res_name rule cannot
+      # be written without hard-coding a filesystem path. common/launch-browser.sh
+      # passes --class=parrot-chrome to give it a stable class instead. Must run
+      # BEFORE entrypoint.sh, because fluxbox reads ~/.fluxbox/apps once at
+      # startup.
+      #
+      # `shell: bash` is REQUIRED here, not stylistic. Without it GMT splits the
+      # command with shlex.split(posix=False), which KEEPS quote characters, so
+      # the empty res_name argument arrives as the two-character string `""` -
+      # non-empty, and the rule becomes (name="") (class=parrot-chrome), which
+      # matches nothing. fluxbox reports nothing when a rule matches nothing, so
+      # the window would simply never be pinned and position-window.sh would
+      # quietly paper over it on every replay.
+      - command: bash /tmp/repo/parrot/common/pin-windows.sh "" 1440 900 parrot-chrome
+        shell: bash
+      - command: bash /usr/local/bin/entrypoint.sh
+
+flow:
+  # The template checks the HTTP status AFTER the measured navigation, because
+  # Playwright can report the status of the very navigation it measured. A real
+  # browser cannot, so the status is taken separately - and once it is separate,
+  # first is the right place for it: a typo in __GMT_VAR_PAGE__ then costs two
+  # seconds instead of a warmup, a browser start and two measured phases spent
+  # rendering an error page. It also verifies that squid's certificate chains to
+  # the CA in this repository.
+  - name: Check page is reachable
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: bash /tmp/repo/parrot/common/check-url.sh
+
+  # gmtPlaywrightCache() equivalent: load the page once, in a throwaway browser
+  # with a throwaway profile, so that the proxy holds it and the measured
+  # browser still starts with a cold cache of its own.
+  - name: Warmup and Caching
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: bash /tmp/repo/parrot/common/warmup.sh chrome
+
+  # flow-prepend equivalent: the browser is started HERE, in a hidden step, so
+  # that browser start-up is not inside either measured phase.
+  - name: Start browser
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/start.parrot
+
+  - name: Visit page and idle for 30 s
+    container: window-container
+    commands:
+      - type: console
+        command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/visit.parrot
+        read-notes-stdout: true
+      - type: console
+        command: echo $(date +%s%N) website_load=1
+        shell: bash
+
+  - name: Scroll down and wait 5 s
+    container: window-container
+    commands:
+      - type: console
+        command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/scroll.parrot
+        read-notes-stdout: true
