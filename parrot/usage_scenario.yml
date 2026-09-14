@@ -144,19 +144,34 @@ flow:
       - type: console
         command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/start.parrot
 
+  # Both measured phases open with phase-clock.sh start and close with
+  # phase-clock.sh finish, which idles to a fixed deadline shared with
+  # playwright/usage_scenario.yml: 33 s for the visit, 7 s for the scroll. The
+  # energy of two phases is only comparable if they last equally long, and the
+  # drivers do not take equally long for the same work; common/phase-clock.sh
+  # has the measurements. Here the deadline mostly absorbs the second replay.py
+  # needs to start before its first key press.
   - name: Visit page and idle for 30 s
     container: window-container
     commands:
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start visit
       - type: console
         command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/visit.parrot
         read-notes-stdout: true
       - type: console
         command: echo $(date +%s%N) website_load=1
         shell: bash
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish visit
 
   - name: Scroll down and wait 5 s
     container: window-container
     commands:
       - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start scroll
+      - type: console
         command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/scroll.parrot
         read-notes-stdout: true
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish scroll

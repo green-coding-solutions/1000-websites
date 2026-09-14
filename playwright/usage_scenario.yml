@@ -11,6 +11,8 @@
 #   3. The scroll phase is a fixed 5 s of wheel ticks rather than a loop that
 #      runs until the bottom of the page, so that both scenarios scroll for the
 #      same amount of time on every site.
+#   4. Both measured phases end on a fixed deadline shared with the Parrot
+#      scenario (common/phase-clock.sh), so they last equally long in both.
 #
 # The sibling scenario in this repository drives a real Google Chrome through
 # real X input instead of through Playwright. See the repository README for
@@ -79,16 +81,28 @@ flow:
       - type: playwright
         command: 'await page.setViewportSize({ width: 1432, height: 809 });'
 
+  # Both measured phases open with phase-clock.sh start and close with
+  # phase-clock.sh finish, which idles to a fixed deadline shared with
+  # parrot/usage_scenario.yml: 33 s for the visit, 7 s for the scroll. The
+  # energy of two phases is only comparable if they last equally long;
+  # common/phase-clock.sh has the measurements that showed they did not.
+  #
+  # The deadline IS the idle, which is why there is no `sleep 30` any more.
+  # page.goto blocks until the load event, so a fixed sleep after it made this
+  # phase load time + 30 s, while in Parrot the page loads inside the idle.
+  # spiegel.de took 31.68 s here against Parrot's 31.39 s, and web.de 30.84 s.
   - name: Visit page and idle for 30 s
     container: gmt-playwright-nodejs
     commands:
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start visit
       - type: playwright
         command: page_result = await page.goto("__GMT_VAR_PAGE__");
       - type: console
-        command: sleep 30
-      - type: console
         command: echo $(date +%s%N) website_load=1
         shell: bash
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish visit
 
   - name: Check HTTP Status Code
     container: gmt-playwright-nodejs
@@ -107,10 +121,19 @@ flow:
   #
   # The pointer is moved to the middle of the viewport first because that is
   # where the Parrot macro puts it, and a wheel event goes to what is under it.
+  #
+  # Tick i is due i x 200 ms after the loop started, not 200 ms after the
+  # previous tick returned. mouse.wheel waits for the renderer to take the event,
+  # so on a busy page the old relative spacing stretched: spiegel.de scrolled for
+  # 7.21 s against Parrot's 6.19 s. A late tick now shortens the next wait.
   - name: Scroll down and wait 5 s
     container: gmt-playwright-nodejs
     commands:
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start scroll
       - type: playwright
         command: await page.mouse.move(720, 400);
       - type: playwright
-        command: for (let i = 0; i < 25; i++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(200); }
+        command: const t0 = Date.now(); for (let i = 1; i <= 25; i++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(Math.max(0, t0 + i * 200 - Date.now())); }
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish scroll

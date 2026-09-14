@@ -38,6 +38,19 @@ The two measured phases are `Visit page and idle for 30 s` and
 `Scroll down and wait 5 s`, named identically in both scenarios, and both emit
 the same `website_load` custom metric.
 
+**Both phases last exactly as long in both scenarios: 33 s and 7 s.** The
+machine draws its baseline power for as long as a phase is open, so phases of
+different length hold energy that cannot be compared, whatever ran inside them.
+The drivers do not take equally long for the same work, and not by a constant:
+Parrot spends about a second starting `replay.py` before its first key press,
+Playwright's `page.goto` waits for the load event, and its wheel events wait for
+the renderer. On machine 6, before the deadlines, the visit took 31.39 s in
+Parrot and 30.54 to 32.30 s in Playwright, the scroll 6.19 s against 5.33 to
+7.21 s. Each measured phase therefore opens with `common/phase-clock.sh start`
+and closes with `common/phase-clock.sh finish`, which idles to the deadline. A
+phase already past its deadline fails the run rather than produce a number that
+is not comparable. The deadlines live only in that script.
+
 ## What is genuinely identical
 
 These were measured in both containers rather than assumed, because they are
@@ -102,8 +115,12 @@ website:
   that, so it fetches the page through the proxy with `curl` first, in a hidden
   step, which also verifies that squid's certificate still chains to
   `parrot/squid-ca.crt`. Both checks are unmeasured.
-* **Parrot's measured phases carry about a second of `replay.py` overhead**,
-  visible as 31 s and 6 s against Playwright's 30 s and 5 s.
+* **The phases last equally long, but the work inside is laid out
+  differently.** Parrot spends about a second starting `replay.py` before its
+  first key press and then idles to the deadline; Playwright starts navigating
+  almost at once and idles longer. The machine's baseline is therefore the same
+  in both, and what remains different is the driver's own CPU work, which is
+  part of what this repository sets out to measure.
 * **Neither scenario stops scrolling at the bottom of the page.** GMT's template
   does, and it was removed here on purpose: ending early on a short page makes
   the phase a different length on every site, which would make the sites
@@ -184,6 +201,8 @@ parrot/common/*.sh              profile setup, proxy CA import, window pinning,
                                 warmup, reachability check
 parrot/squid-ca.crt             the proxy's signing CA, imported into the
                                 browser's NSS store so the MITM cache works
+common/phase-clock.sh           the fixed 33 s and 7 s deadlines both
+                                scenarios' measured phases end on
 tools/submit.py                 cluster submission for one URL or a list
 ```
 

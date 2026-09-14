@@ -1,0 +1,24 @@
+# Ten sites for a first sweep: three chosen by hand, seven of the most-visited
+# sites in Germany. One URL per line, for tools/submit.py --url-file sites.txt.
+#
+# The seven are all in the top-1000 bucket of the Chrome UX Report list for
+# Germany (August 2026) and were picked for spread: news, portals, shopping,
+# classifieds, reference. Every URL returns HTTP 200 to exactly the curl call in
+# parrot/common/check-url.sh. That ruled out ebay.de, idealo.de, mediamarkt.de,
+# mobile.de and wetteronline.de, which answer that call with 403, so a Parrot
+# run on them would stop at the reachability check.
+#
+# URLs are written in their final form, so no redirect is part of the measured
+# load. The exception is ribalba.de, see its line.
+
+https://www.tagesschau.de
+https://www.green-coding.io
+http://ribalba.de   # nothing listens on port 443; this redirects to https://ribalba.notion.site/
+
+https://www.spiegel.de
+https://www.bild.de
+https://www.t-online.de
+https://web.de
+https://www.amazon.de
+https://www.kleinanzeigen.de
+https://de.wikipedia.org/wiki/Wikipedia:Hauptseite
