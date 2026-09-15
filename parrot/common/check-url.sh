@@ -28,11 +28,34 @@ log() { printf '[check-url] %s\n' "$*"; }
 
 [[ -f "$CA_FILE" ]] || { echo "[check-url] CA file not found: $CA_FILE" >&2; exit 1; }
 
+CHROME_MAJOR=152
+CHROME_HEADERS=(
+    -H 'sec-ch-ua: "Not?A_Brand";v="24", "Chromium";v="152"'
+    -H 'sec-ch-ua-mobile: ?0'
+    -H 'sec-ch-ua-platform: "Linux"'
+    -H 'Upgrade-Insecure-Requests: 1'
+    -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
+    -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
+    -H 'Sec-Fetch-Site: none'
+    -H 'Sec-Fetch-Mode: navigate'
+    -H 'Sec-Fetch-User: ?1'
+    -H 'Sec-Fetch-Dest: document'
+    -H 'Accept-Encoding: gzip, deflate, br, zstd'
+    -H 'Accept-Language: en-US,en;q=0.9'
+)
+
+running_major="$(google-chrome --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
+if [[ -n "$running_major" && "$running_major" != "$CHROME_MAJOR" ]]; then
+    log "WARNING: the request headers were captured from Chrome ${CHROME_MAJOR} but this container runs Chrome ${running_major}; re-capture them"
+fi
+
 log "GET ${PARROT_URL} via http://${PROXY_HOST}:${PROXY_PORT}, verifying against ${CA_FILE}"
 
 status="$(curl -sS -L --max-time 60 \
     --proxy "http://${PROXY_HOST}:${PROXY_PORT}" \
     --cacert "$CA_FILE" \
+    "${CHROME_HEADERS[@]}" \
+    -H 'Cache-Control: no-store' \
     -o /dev/null -w '%{http_code}' \
     "$PARROT_URL")"
 
