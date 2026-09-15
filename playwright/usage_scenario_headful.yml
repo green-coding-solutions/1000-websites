@@ -73,6 +73,10 @@ flow:
   # host. It is here so that nobody has to take that on trust: a Chrome on a
   # desktop reporting Xft.dpi 144 renders at 1.5, which is what made
   # parrot/usage_scenario_headful.yml force the factor to 1.
+  #
+  # The ratio is compared with a tolerance, not for equality. On that same
+  # desktop this page reported 1432x809 at 1.0000000298023224: the emulated 1,
+  # with float noise from a screen at 1.5.
   - name: Match the Parrot viewport
     container: gmt-playwright-nodejs
     hidden: true
@@ -80,7 +84,7 @@ flow:
       - type: playwright
         command: 'await page.setViewportSize({ width: 1432, height: 809 });'
       - type: playwright
-        command: 'const vp = await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio].join(" ")); if (vp !== "1432 809 1") throw `Viewport is ${vp} (width height devicePixelRatio), expected 1432 809 1`;'
+        command: 'const [w, h, dpr] = await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio]); if (w !== 1432 || h !== 809 || Math.abs(dpr - 1) > 0.001) throw `Viewport is ${w}x${h} at devicePixelRatio ${dpr}, expected 1432x809 at 1`;'
 
   # Measured phases and the status check: identical to
   # playwright/usage_scenario.yml, including the deadlines from
