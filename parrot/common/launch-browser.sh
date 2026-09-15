@@ -84,6 +84,18 @@ chrome)
     # --disable-features stays ONE switch: Chrome keeps only the last
     #   --disable-features it is given, so a second one would replace this list.
     # --proxy-bypass-list is quoted because <-loopback> is a redirection to bash.
+    # --force-device-scale-factor, only when PARROT_DEVICE_SCALE_FACTOR is set:
+    #   parrot/usage_scenario_headful.yml sets it to 1, because it draws on the
+    #   host's X server and Chrome scales by that server's Xft.dpi. On a desktop
+    #   at 144 dpi a 1440x900 window gave pages 928x471 CSS px at
+    #   devicePixelRatio 1.5, where the Xvfb gives 1432x809 at 1. Playwright
+    #   needs no such switch: its emulated viewport sets the factor to 1 itself.
+    #   Unset, the command line is exactly the list below, so
+    #   parrot/usage_scenario.yml still runs the Chrome it always ran.
+    scale=()
+    if [[ -n "${PARROT_DEVICE_SCALE_FACTOR:-}" ]]; then
+        scale=(--force-device-scale-factor="$PARROT_DEVICE_SCALE_FACTOR")
+    fi
     exec google-chrome \
         --class=parrot-chrome \
         --user-data-dir="$PROFILE" \
@@ -127,6 +139,7 @@ chrome)
         --edge-skip-compat-layer-relaunch \
         --enable-unsafe-swiftshader \
         --proxy-bypass-list='<-loopback>' \
+        "${scale[@]}" \
         "$URL"
     ;;
 

@@ -1,0 +1,173 @@
+---
+# Measure __GMT_VAR_PAGE__ in a real Chrome, driven by Parrot, on the HOST's X
+# server instead of an Xvfb inside the container.
+#
+# This is parrot/usage_scenario.yml step for step: same image, same macros, same
+# squid cache, same phase deadlines. Only where Chrome draws differs, and these
+# are the changes that follow from it:
+#
+#   * USE_HOST_DISPLAY=1 makes the image's entrypoint.sh check that DISPLAY is
+#     reachable and then start NOTHING: no Xvfb, no fluxbox, no VNC.
+#   * /tmp/.X11-unix is mounted, so that DISPLAY=:0 is the host's server.
+#   * pin-windows.sh is gone, because all it does is configure fluxbox. Chrome's
+#     geometry comes from position-window.sh instead, which replay.py runs on
+#     every macro, and a hidden step fails the run if the window is not
+#     1440x900.
+#   * PARROT_DEVICE_SCALE_FACTOR=1, because a host server is not a 96 dpi Xvfb.
+#     See its comment below.
+#
+# THE HOST HAS TO LET THE CONTAINER IN. It connects over the socket as root and
+# without a cookie, so on the host, in the session that owns :0:
+#
+#   xhost +si:localuser:root     # or parrot's broader `xhost +local:`
+#
+# Without that, or without an X server on :0 at all, the run dies in BOOT with
+#
+#   [entrypoint] cannot reach host display :0
+#
+# That includes the cluster. Machine 15 ran parrot's xpdf host-display scenario
+# successfully on 2026-06-04 and failed exactly like this on 2026-06-18 and
+# 2026-08-19, so check that its :0 is up before submitting this file there.
+#
+# Parrot's input is real X input on that server: the pointer moves and keys are
+# pressed on the host's screen. Do not touch the host's mouse or keyboard while
+# a run is in progress.
+#
+# RUN IT WITH (one variable, the page):
+#
+#   ./runner.py \
+#     --uri /home/didi/code/1000-websites \
+#     --filename parrot/usage_scenario_headful.yml \
+#     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --allow-unsafe --dev-no-sleeps --dev-no-system-checks=check_ssh_session
+#
+# --allow-unsafe is needed in CLI mode ONLY: for docker-run-args and for the
+# absolute /tmp/.X11-unix volume. On the cluster, user 8 has both allowlisted.
+name: "__GMT_VAR_PAGE__ - 1000 Websites Parrot Chrome Headful"
+author: Didi <didi@green-coding.io>
+description: "Opens __GMT_VAR_PAGE__ in a real Chrome on the host's X display from a warm proxy cache, idles 30 s, then scrolls for 5 s"
+
+custom_metrics:
+  website_load:
+    unit: Website Load and Idle Cached
+    sci: True
+
+services:
+  squid:
+    image: greencoding/squid_reverse_proxy:v5
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "--proxy", "http://squid:3128", "https://www.google.com", "--insecure"]
+      interval: "1h" # effectively turns repeated healthchecks during runtime off
+      start_period: "60s"
+      start_interval: "1s"
+
+  window-container:
+    image: ribalba/parrot-browsers:v1
+    depends_on:
+      - squid
+    # Writable, not :ro. The cluster matches volumes against the user's
+    # allowed_volume_mounts as a string, and user 8's entry is "/tmp/.X11-unix"
+    # with no option; "/tmp/.X11-unix:ro" would not match it.
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      PARROT_URL: __GMT_VAR_PAGE__
+      USE_HOST_DISPLAY: 1
+      DISPLAY: ":0"
+      # Chrome takes its device scale factor from the X server's Xft.dpi. An
+      # Xvfb has none and gives 1. A desktop does not: on one reporting
+      # Xft.dpi 144, this image's Chrome rendered at devicePixelRatio 1.5, and
+      # a 1440x900 window gave pages a 928x471 CSS px viewport instead of the
+      # 1432x809 both other scenarios measure with. launch-browser.sh turns this
+      # into --force-device-scale-factor, for the warmup and the measured
+      # browser alike.
+      PARROT_DEVICE_SCALE_FACTOR: 1
+      # position-window.sh reads these on every replay. There is no fluxbox rule
+      # to pin the window any more, so they are now the ONLY thing giving Chrome
+      # its 1440x900 at 0,0. There is no RESOLUTION: position-window.sh sizes the
+      # framebuffer with `xrandr --fb` from it, and the host's framebuffer
+      # belongs to the host. Unset, it asks for 1440x900, which a host server
+      # with a larger screen refuses.
+      WINDOW_X: 0
+      WINDOW_Y: 0
+      WINDOW_WIDTH: 1440
+      WINDOW_HEIGHT: 900
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    # Why the 1 GB stays although Chrome no longer uses /dev/shm: see
+    # parrot/usage_scenario.yml.
+    docker-run-args:
+      - --shm-size=1g
+
+    setup-commands:
+      # Imports the proxy's CA into ~/.pki/nssdb and creates the profile
+      # directory. See parrot/usage_scenario.yml.
+      - command: bash /tmp/repo/parrot/common/setup-profile.sh chrome /tmp/parrot-profile-measure
+      # With USE_HOST_DISPLAY=1 this only fails BOOT early if :0 cannot be
+      # reached, rather than letting the first replay time out on it.
+      - command: bash /usr/local/bin/entrypoint.sh
+
+flow:
+  # Unmeasured, first, and for the same reasons as in parrot/usage_scenario.yml.
+  - name: Check page is reachable
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: bash /tmp/repo/parrot/common/check-url.sh
+
+  - name: Warmup and Caching
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: bash /tmp/repo/parrot/common/warmup.sh chrome
+
+  - name: Start browser
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/start.parrot
+
+  # In the Xvfb scenario fluxbox pins the window, and position-window.sh cannot
+  # move it off 1440x900 for long. Here position-window.sh is all there is, and
+  # it only WARNS when the host's window manager overrides its request. The
+  # viewport follows from the window size, so a window at any other size would
+  # measure the page at a viewport neither other scenario uses, and still
+  # produce a plausible number.
+  - name: Check browser window is 1440x900
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: 'xdotool search --onlyvisible --class parrot-chrome getwindowgeometry %@ | tee /dev/stderr | grep -q "Geometry: 1440x900$"'
+        shell: bash
+
+  # Measured phases: identical to parrot/usage_scenario.yml, including the
+  # deadlines from common/phase-clock.sh.
+  - name: Visit page and idle for 30 s
+    container: window-container
+    commands:
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start visit
+      - type: console
+        command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/visit.parrot
+        read-notes-stdout: true
+      - type: console
+        command: echo $(date +%s%N) website_load=1
+        shell: bash
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish visit
+
+  - name: Scroll down and wait 5 s
+    container: window-container
+    commands:
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start scroll
+      - type: console
+        command: python3 /usr/local/bin/replay.py /tmp/repo/parrot/chrome/scroll.parrot
+        read-notes-stdout: true
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish scroll

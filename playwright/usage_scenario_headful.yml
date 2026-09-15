@@ -1,0 +1,118 @@
+---
+# Measure __GMT_VAR_PAGE__ in a headful Chromium driven by Playwright, on the
+# HOST's X server instead of an Xvfb inside the container.
+#
+# This is playwright/usage_scenario.yml step for step. Only where Chromium draws
+# differs, and these are the changes that follow from it:
+#
+#   * compose-file is GMT's gmt-playwright-headful-with-cache.yml instead of
+#     gmt-playwright-with-cache.yml: the same partial plus a /tmp/.X11-unix
+#     mount and DISPLAY=":0".
+#   * flow-prepend starts the browser without xvfb-run, so it opens on :0.
+#   * "Match the Parrot viewport" also fails the run unless the page reports
+#     1432x809 at devicePixelRatio 1. That held in the Xvfb, which has no
+#     Xft.dpi; a host's X server may have one, and Chrome scales by it.
+#
+# THE HOST HAS TO LET THE CONTAINER IN. It connects over the socket as root and
+# without a cookie, so on the host, in the session that owns :0:
+#
+#   xhost +si:localuser:root     # or parrot's broader `xhost +local:`
+#
+# Without that, or without an X server on :0 at all, the browser cannot start
+# and the run fails in flow-prepend while waiting for it. That includes the
+# cluster: see parrot/usage_scenario_headful.yml for machine 15's record.
+#
+# RUN IT WITH (one variable, the page):
+#
+#    runner.py \
+#     --uri /home/didi/code/1000-websites \
+#     --filename playwright/usage_scenario_headful.yml \
+#     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --allow-unsafe --dev-no-sleeps --dev-no-system-checks=check_ssh_session
+#
+# --allow-unsafe is needed in CLI mode ONLY, for the partial's absolute
+# /tmp/.X11-unix volume. On the cluster, user 8 has it allowlisted.
+name: "__GMT_VAR_PAGE__ - 1000 Websites Playwright Chrome Headful"
+author: Didi Hoffmann <didi@green-coding.io>
+description: "Opens __GMT_VAR_PAGE__ in a headful Chromium on the host's X display from a warm proxy cache, idles 30 s, then scrolls for 5 s"
+
+custom_metrics:
+  website_load:
+    unit: Website Load and Idle Cached
+    sci: True
+
+compose-file: !include-gmt-helper gmt-playwright-headful-with-cache.yml
+
+flow-prepend:
+  - name: Starting browser IPC
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: console
+        command: node /tmp/gmt-utils/gmt-playwright-ipc.js --headless false --browser chromium --proxy http://squid:3128
+        note: Starting headful Chromium on the host display in background process with IPC
+        detach: true
+      - type: console
+        command: timeout 60 bash -c 'until [ -p "/tmp/playwright-ipc-ready" ]; do sleep 1; done && echo "Browser ready!"'
+        shell: bash
+        note: Waiting for the browser to signal readiness on the rendezvous FIFO
+
+flow:
+  - name: Warmup and Caching
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: await gmtPlaywrightCache("__GMT_VAR_PAGE__", 20);
+
+  # Why 1432x809, and why a step of its own: see playwright/usage_scenario.yml.
+  #
+  # Playwright's emulated viewport sets devicePixelRatio to 1 whatever the
+  # display says (deviceScaleFactor defaults to 1 in its
+  # Emulation.setDeviceMetricsOverride), so the check is expected to pass on any
+  # host. It is here so that nobody has to take that on trust: a Chrome on a
+  # desktop reporting Xft.dpi 144 renders at 1.5, which is what made
+  # parrot/usage_scenario_headful.yml force the factor to 1.
+  - name: Match the Parrot viewport
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: 'await page.setViewportSize({ width: 1432, height: 809 });'
+      - type: playwright
+        command: 'const vp = await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio].join(" ")); if (vp !== "1432 809 1") throw `Viewport is ${vp} (width height devicePixelRatio), expected 1432 809 1`;'
+
+  # Measured phases and the status check: identical to
+  # playwright/usage_scenario.yml, including the deadlines from
+  # common/phase-clock.sh.
+  - name: Visit page and idle for 30 s
+    container: gmt-playwright-nodejs
+    commands:
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start visit
+      - type: playwright
+        command: page_result = await page.goto("__GMT_VAR_PAGE__");
+      - type: console
+        command: echo $(date +%s%N) website_load=1
+        shell: bash
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish visit
+
+  - name: Check HTTP Status Code
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: if (!page_result.ok()) throw `Page was not accessible. HTTP Return code ${page_result.status()}`
+
+  - name: Scroll down and wait 5 s
+    container: gmt-playwright-nodejs
+    commands:
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh start scroll
+      - type: playwright
+        command: await page.mouse.move(720, 400);
+      - type: playwright
+        command: const t0 = Date.now(); for (let i = 1; i <= 25; i++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(Math.max(0, t0 + i * 200 - Date.now())); }
+      - type: console
+        command: bash /tmp/repo/common/phase-clock.sh finish scroll
