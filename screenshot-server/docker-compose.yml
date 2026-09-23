@@ -1,9 +1,9 @@
 # The screenshot gallery for the 1000-websites benchmark: server.py from this
-# directory in a stock Python image, nothing to build.
+# directory built into a stock Python image (see Dockerfile).
 #
-#   docker compose up -d       start it
-#   docker compose logs -f     follow the request log
-#   docker compose down        stop it
+#   docker compose up -d --build   start it, rebuilding after server.py changed
+#   docker compose logs -f         follow the request log
+#   docker compose down            stop it
 #
 # Screenshots and index.jsonl land in ./screenshots next to this file. Deleting
 # that directory removes all data. The server has no authentication and speaks
@@ -11,10 +11,9 @@
 # benchmark run needs it.
 services:
   screenshot-server:
-    image: python:3.13-slim
+    build: .
     command: ["python", "/app/server.py", "--host", "0.0.0.0", "--port", "8765", "--data-dir", "/data"]
     volumes:
-      - ./server.py:/app/server.py:ro
       - ./screenshots:/data
     ports:
       # Loopback only, for a reverse proxy on this host. If the proxy runs

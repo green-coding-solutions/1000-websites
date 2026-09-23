@@ -1,0 +1,4 @@
+# The build needs server.py only. Above all, keep ./screenshots out: it can be
+# large and belongs to root, which the build cannot read.
+*
+!server.py

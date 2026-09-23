@@ -17,11 +17,20 @@ HTTPS reverse proxy, and delete it and its data afterwards.
 
 ```bash
 cd screenshot-server
-docker compose up -d        # listens on 127.0.0.1:8765
-docker compose logs -f      # one line per request
-docker compose down         # stop it
-rm -rf screenshots          # delete all data
+docker compose up -d --build   # listens on 127.0.0.1:8765
+docker compose logs -f         # one line per request
+docker compose down            # stop it
+rm -rf screenshots             # delete all data
 ```
+
+`server.py` is built into the image, so after changing it run `up` with
+`--build` again. It is not bind-mounted because Coolify and similar hosts run
+the compose file from a directory of their own, where `./server.py` does not
+exist: Docker then mounts an empty directory in its place and the container
+exits with `can't find '__main__' module in '/app/server.py'`. On Coolify,
+deploy the repository with the Docker Compose build pack, base directory
+`/screenshot-server`, and give the service a domain with port 8765, for example
+`https://shots.example.org:8765`.
 
 The container runs as root, so `./screenshots` may belong to root. If `rm`
 refuses: `docker run --rm -v "$PWD":/w python:3.13-slim rm -rf /w/screenshots`.
