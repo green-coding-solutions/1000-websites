@@ -32,7 +32,10 @@ Both scenarios do exactly this, and only this:
 3. **Idle for 30 s.** Record what the page does when nobody touches it: timers,
    animations, polling, ads rotating. Same measured phase as step 2, because a
    real browser cannot signal "load finished" the way Playwright can.
-4. **Scroll for 5 s.** 25 wheel-down ticks, 200 ms apart. Measured.
+4. **Take a review screenshot.** Capture what the page shows and upload it, so
+   that a run on the cluster can be checked by eye. Hidden and unmeasured; see
+   [Review screenshots](#review-screenshots).
+5. **Scroll for 5 s.** 25 wheel-down ticks, 200 ms apart. Measured.
 
 The two measured phases are `Visit page and idle for 30 s` and
 `Scroll down and wait 5 s`, named identically in both scenarios, and both emit
@@ -115,6 +118,27 @@ website:
   that, so it fetches the page through the proxy with `curl` first, in a hidden
   step, which also verifies that squid's certificate still chains to
   `parrot/squid-ca.crt`. Both checks are unmeasured.
+  Parrot's `curl` sends the request headers its Chrome sends on a navigation,
+  captured from the browser itself: with curl's own headers, bot managers
+  answered 403 on ebay.de, idealo.de, mediamarkt.de and wetteronline.de, all of
+  which the browsers load. It also sends `Cache-Control: no-store`, so that
+  squid does not keep what curl was given and hand it to the browsers; a copy
+  curl got from idealo.de left the warmup and the measured browser reloading a
+  blank page.
+* **Neither scenario can measure a site that refuses HTTP/1.1.** squid speaks
+  only HTTP/1.1 to origin servers. mobile.de serves HTTP/2 and rejects
+  HTTP/1.1, so through squid it answers curl and both browsers with 403, with
+  or without squid's `Via` and `X-Forwarded-For` headers. Parrot's check stops
+  such a run before it measures the block page; Playwright's check stops it
+  after.
+* **squid's cache can trap a page behind a bot manager in a reload loop.** Its
+  configuration caches every document, including those marked `private` or
+  `no-store`, so a page that reloads itself, as bot-manager challenges do, gets
+  squid's stored copy back each time instead of a fresh one. amazon.de's warmup
+  did this in two of four test runs, re-requesting the same document about 270
+  times in 22 s with no reachability check involved. The measured load after it
+  rendered normally each time, but nothing guarantees that, so check what runs
+  on such sites actually rendered.
 * **The phases last equally long, but the work inside is laid out
   differently.** Parrot spends about a second starting `replay.py` before its
   first key press and then idles to the deadline; Playwright starts navigating
@@ -126,9 +150,65 @@ website:
   the phase a different length on every site, which would make the sites
   incomparable with each other as well as the scenarios with each other.
 
+## Headful on the host's X display
+
+Each scenario has a headful twin that draws on the machine's own X server
+instead of an Xvfb inside the container: `parrot/usage_scenario_headful.yml`
+and `playwright/usage_scenario_headful.yml`. The flow, the phase names and
+deadlines, the squid cache and the `website_load` metric are the ones above, so
+the two twins compare against each other the way the Xvfb pair does. Against
+the Xvfb pair, a delta also contains whatever the host's X server, compositor
+and display do with the frames Chrome sends them.
+
+Both mount `/tmp/.X11-unix`, set `DISPLAY=:0` and connect as root without a
+cookie, so the host has to let them in:
+
+```bash
+xhost +si:localuser:root     # or parrot's broader: xhost +local:
+```
+
+Without an X server on `:0` that accepts them, the Parrot one fails in BOOT with
+`[entrypoint] cannot reach host display :0`, and the Playwright one cannot start
+its browser. Machine 15 ran Parrot's xpdf host-display scenario successfully on
+2026-06-04 and failed that way on 2026-06-18 and 2026-08-19, so check its
+display before submitting there.
+
+What had to change beyond pointing at `:0`:
+
+* **Parrot's Chrome is forced to a device scale factor of 1.** Chrome scales by
+  the X server's `Xft.dpi`, which an Xvfb does not set. On a desktop reporting
+  144 dpi, a 1440x900 window gave pages 928x471 CSS px at `devicePixelRatio`
+  1.5 instead of 1432x809 at 1. The headful scenario sets
+  `PARROT_DEVICE_SCALE_FACTOR=1`, and `launch-browser.sh` turns that into
+  `--force-device-scale-factor=1` for the warmup and the measured browser.
+  Unset, the command line is unchanged, so the Xvfb scenario runs the same
+  Chrome as before. Playwright needs no switch: its emulated viewport sets the
+  factor to 1 itself.
+* **Parrot's window is placed by `position-window.sh` alone.** There is no
+  fluxbox to pin it, and `position-window.sh` only warns when a window manager
+  overrides it, so a hidden step fails the run unless the window is 1440x900.
+* **Playwright checks its viewport.** A hidden step fails the run unless the
+  page reports 1432x809 at a `devicePixelRatio` within 0.001 of 1. On the 144
+  dpi desktop it reported 1.0000000298023224, the emulated 1 plus float noise,
+  which is why it is not an equality test.
+* **Parrot moves the host's real pointer and presses real keys.** Do not touch
+  the host's mouse or keyboard while a run is in progress.
+
+Locally, run them like the others but with `--allow-unsafe` for both: the X
+socket is an absolute volume, which GMT's CLI only mounts in unsafe mode. On the
+cluster, user 8 has `/tmp/.X11-unix` allowlisted.
+
+A failing check in the Playwright one does not end a local run. A Playwright step
+that throws never signals GMT that it returned, and GMT only gives up waiting
+after the flow process timeout, which a cluster job takes from the user's
+`flow_process_duration` and `runner.py` leaves unset. The first local run of
+this scenario sat for 32 minutes on a viewport check that had failed at once.
+The HTTP status check in the Xvfb scenario behaves the same way.
+
 ## Running one locally
 
-Both take exactly one variable, the page. From a Green Metrics Tool checkout:
+Both take two variables: the page, and the upload URL for the review
+screenshot, where `off` skips the upload. From a Green Metrics Tool checkout:
 
 ```bash
 cd /home/didi/code/green-metrics-tool
@@ -138,6 +218,7 @@ venv/bin/python runner.py \
   --uri /home/didi/code/1000-websites \
   --filename playwright/usage_scenario.yml \
   --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+  --variable __GMT_VAR_SCREENSHOT_URL__=off \
   --dev-no-sleeps --dev-no-system-checks
 
 # Parrot
@@ -145,6 +226,7 @@ venv/bin/python runner.py \
   --uri /home/didi/code/1000-websites \
   --filename parrot/usage_scenario.yml \
   --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+  --variable __GMT_VAR_SCREENSHOT_URL__=off \
   --allow-unsafe --dev-no-sleeps --dev-no-system-checks
 ```
 
@@ -175,6 +257,13 @@ tools/submit.py --url https://www.tagesschau.de --scenario parrot
 
 # the sweep: one URL per line, blank lines and # comments ignored
 tools/submit.py --url-file sites.txt
+
+# the headful variants, on the machine's own X display; combines with the above
+tools/submit.py --url https://www.tagesschau.de --headful
+
+# label a batch: " - batch-2026-09-15" is appended to every run name, so the
+# dashboard search finds the whole batch
+tools/submit.py --url-file sites.txt --name-suffix batch-2026-09-15
 ```
 
 Both scenarios default to **machine 15** (`GUI High Performance Benchmarking -
@@ -191,18 +280,66 @@ Check results with:
 curl 'https://api.green-coding.io/v2/runs?uri=https://github.com/green-coding-solutions/1000-websites'
 ```
 
+## Review screenshots
+
+A run on the cluster keeps no files, and watching runs on a screen does not
+scale: a Parrot run took about 68 s on a local machine with GMT's sleeps off, so
+580 sites take 11 hours to watch. Every scenario therefore takes one screenshot
+of the loaded page and uploads it to `screenshot-server/`, which shows all of
+them in one gallery, one row per site, with both drivers side by side.
+
+* **When:** in a hidden phase, `Screenshot for review`, right after
+  `Visit page and idle for 30 s`. It shows the page as the visit phase
+  measured it, and none of its work is in a measured phase. In Playwright it
+  comes before the status check, so a page that fails that check still leaves
+  a screenshot.
+* **What:** Parrot grabs the whole X screen with `import`, so Chrome's address
+  bar shows where the browser really ended up after redirects. Playwright uses
+  `page.screenshot`, which is the 1432x809 viewport without browser UI. Both send
+  the page title along.
+* **Never fails the run.** A capture or upload problem is a `[screenshot]
+  WARNING` line in the run's log, and the run goes on. A review server that is
+  down must not cost a cluster run.
+* **One side effect:** the scroll phase now starts a second or two later
+  after the page loaded than before, on a page that had that much longer to
+  settle. Its 7 s deadline is unchanged.
+
+One variable configures it, and every scenario requires it:
+`__GMT_VAR_SCREENSHOT_URL__`, the server's upload endpoint, e.g.
+`https://shots.example.org/upload`, or `off` to skip the upload.
+`tools/submit.py` fills it in from `--screenshot-url` or `$SCREENSHOT_URL`, and
+without either it submits with screenshots off and says so.
+
+The server has no authentication: anyone who knows the URL can upload to it and
+see the gallery. That is fine for a server that lives for one batch of runs
+behind an HTTPS proxy and is deleted afterwards, and not for anything longer.
+
+```bash
+tools/submit.py --url-file sites.txt --screenshot-url https://shots.example.org/upload
+```
+
+How to run the server, with docker compose behind an HTTPS proxy, is in
+`screenshot-server/README.md`.
+
 ## Layout
 
 ```
 playwright/usage_scenario.yml   the webnrg benchmark, headful Chromium
 parrot/usage_scenario.yml       the same flow in a real Chrome
+playwright/usage_scenario_headful.yml
+parrot/usage_scenario_headful.yml
+                                both of the above on the host's X display (:0)
+                                instead of an Xvfb in the container
 parrot/chrome/*.parrot          the three input macros: start, visit, scroll
 parrot/common/*.sh              profile setup, proxy CA import, window pinning,
-                                warmup, reachability check
+                                warmup, reachability check, review screenshot
 parrot/squid-ca.crt             the proxy's signing CA, imported into the
                                 browser's NSS store so the MITM cache works
 common/phase-clock.sh           the fixed 33 s and 7 s deadlines both
                                 scenarios' measured phases end on
+common/upload-screenshot.sh     uploads the review screenshot, for both drivers
+screenshot-server/              receives the review screenshots and shows them
+                                in one gallery
 tools/submit.py                 cluster submission for one URL or a list
 ```
 

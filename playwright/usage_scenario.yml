@@ -3,7 +3,7 @@
 # warm caching proxy in front of it.
 #
 # This is GMT's templates/website/usage_scenario_cached.yml - the webnrg
-# benchmark - with three deliberate changes, all of them made so that this
+# benchmark - with four deliberate changes, all of them made so that this
 # scenario and parrot/usage_scenario.yml measure the same thing:
 #
 #   1. Chromium instead of Firefox, and headful instead of headless.
@@ -18,12 +18,13 @@
 # real X input instead of through Playwright. See the repository README for
 # what is and is not comparable between the two.
 #
-# RUN IT WITH (one variable, the page):
+# RUN IT WITH (the page, and where the review screenshot goes; off skips it):
 #
 #    runner.py \
 #     --uri /home/didi/code/1000-websites \
 #     --filename playwright/usage_scenario.yml \
 #     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --variable __GMT_VAR_SCREENSHOT_URL__=off \
 #     --dev-no-sleeps --dev-no-system-checks=check_ssh_session
 #
 name: "__GMT_VAR_PAGE__ - 1000 Websites Playwright Chrome"
@@ -103,6 +104,24 @@ flow:
         shell: bash
       - type: console
         command: bash /tmp/repo/common/phase-clock.sh finish visit
+
+  # Not part of the benchmark: see the same hidden phase in
+  # parrot/usage_scenario.yml. page.screenshot takes the viewport only, without
+  # Chrome's toolbar, because this image has no X screen grabber; the viewport is
+  # what the page renders into anyway. It runs before the status check so that a
+  # page failing that check still leaves a screenshot of what it served.
+  #
+  # The try/catch is load-bearing: a Playwright command that throws never
+  # returns to GMT, and the run would sit in this hidden phase until the flow
+  # times out. A missing screenshot is reported by the upload script instead.
+  - name: Screenshot for review
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: 'try { await page.screenshot({ path: "/tmp/review-screenshot.png", timeout: 15000 }); fs.writeFileSync("/tmp/review-screenshot.png.title", await page.title()); } catch (e) { console.log(`[screenshot] WARNING: ${e}`); }'
+      - type: console
+        command: bash /tmp/repo/common/upload-screenshot.sh /tmp/review-screenshot.png playwright xvfb __GMT_VAR_PAGE__ __GMT_VAR_SCREENSHOT_URL__
 
   - name: Check HTTP Status Code
     container: gmt-playwright-nodejs

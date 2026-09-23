@@ -8,12 +8,13 @@
 # repository README says what changed and why, and what is and is not comparable
 # against the Playwright scenario next to it.
 #
-# RUN IT WITH (one variable, the page):
+# RUN IT WITH (the page, and where the review screenshot goes; off skips it):
 #
 #   ./runner.py \
 #     --uri /home/didi/code/1000-websites \
 #     --filename parrot/usage_scenario.yml \
 #     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --variable __GMT_VAR_SCREENSHOT_URL__=off \
 #     --allow-unsafe --dev-no-sleeps --dev-no-system-checks=check_ssh_session
 #
 # --allow-unsafe is needed in CLI mode ONLY, and only because of docker-run-args
@@ -164,6 +165,25 @@ flow:
         shell: bash
       - type: console
         command: bash /tmp/repo/common/phase-clock.sh finish visit
+
+  # Not part of the benchmark: a screenshot of what the visit phase left on the
+  # screen, uploaded to screenshot-server/. A cluster run keeps no files, and this
+  # is the only way to check by eye what hundreds of runs actually rendered.
+  # Hidden, so its work is in no measured phase, and between the two measured
+  # phases so that it shows the page as the visit measured it. Neither script
+  # can fail the run; __GMT_VAR_SCREENSHOT_URL__=off skips the upload.
+  #
+  # No `shell: bash` and no quotes around the variables: without a shell GMT
+  # keeps quote characters inside the arguments, and none of these values
+  # contains a space.
+  - name: Screenshot for review
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: bash /tmp/repo/parrot/common/screenshot.sh /tmp/review-screenshot.png
+      - type: console
+        command: bash /tmp/repo/common/upload-screenshot.sh /tmp/review-screenshot.png parrot xvfb __GMT_VAR_PAGE__ __GMT_VAR_SCREENSHOT_URL__
 
   - name: Scroll down and wait 5 s
     container: window-container

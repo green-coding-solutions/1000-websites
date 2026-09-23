@@ -1,0 +1,36 @@
+# The screenshot gallery for the 1000-websites benchmark: server.py from this
+# directory in a stock Python image, nothing to build.
+#
+#   docker compose up -d       start it
+#   docker compose logs -f     follow the request log
+#   docker compose down        stop it
+#
+# Screenshots and index.jsonl land in ./screenshots next to this file. Deleting
+# that directory removes all data. The server has no authentication and speaks
+# plain HTTP: run it behind your HTTPS reverse proxy, and only for as long as a
+# benchmark run needs it.
+services:
+  screenshot-server:
+    image: python:3.13-slim
+    command: ["python", "/app/server.py", "--host", "0.0.0.0", "--port", "8765", "--data-dir", "/data"]
+    volumes:
+      - ./server.py:/app/server.py:ro
+      - ./screenshots:/data
+    ports:
+      # Loopback only, for a reverse proxy on this host. If the proxy runs
+      # elsewhere, publish "${SCREENSHOT_PORT:-8765}:8765" instead; if it runs in
+      # a container, drop the port and join the proxy's docker network.
+      - "127.0.0.1:${SCREENSHOT_PORT:-8765}:8765"
+    environment:
+      PYTHONUNBUFFERED: "1"
+    # Python as PID 1 would ignore the stop signal and make `down` wait 10 s for
+    # the kill; the init process passes it on.
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      # The slim image has no curl.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

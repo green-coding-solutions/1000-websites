@@ -22,12 +22,13 @@
 # and the run fails in flow-prepend while waiting for it. That includes the
 # cluster: see parrot/usage_scenario_headful.yml for machine 15's record.
 #
-# RUN IT WITH (one variable, the page):
+# RUN IT WITH (the page, and where the review screenshot goes; off skips it):
 #
 #    runner.py \
 #     --uri /home/didi/code/1000-websites \
 #     --filename playwright/usage_scenario_headful.yml \
 #     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --variable __GMT_VAR_SCREENSHOT_URL__=off \
 #     --allow-unsafe --dev-no-sleeps --dev-no-system-checks=check_ssh_session
 #
 # --allow-unsafe is needed in CLI mode ONLY, for the partial's absolute
@@ -101,6 +102,17 @@ flow:
         shell: bash
       - type: console
         command: bash /tmp/repo/common/phase-clock.sh finish visit
+
+  # Unmeasured, and identical to playwright/usage_scenario.yml except for the
+  # variant it reports.
+  - name: Screenshot for review
+    container: gmt-playwright-nodejs
+    hidden: true
+    commands:
+      - type: playwright
+        command: 'try { await page.screenshot({ path: "/tmp/review-screenshot.png", timeout: 15000 }); fs.writeFileSync("/tmp/review-screenshot.png.title", await page.title()); } catch (e) { console.log(`[screenshot] WARNING: ${e}`); }'
+      - type: console
+        command: bash /tmp/repo/common/upload-screenshot.sh /tmp/review-screenshot.png playwright headful __GMT_VAR_PAGE__ __GMT_VAR_SCREENSHOT_URL__
 
   - name: Check HTTP Status Code
     container: gmt-playwright-nodejs

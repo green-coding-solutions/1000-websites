@@ -14,6 +14,9 @@ times:
     two scenarios here are only worth anything against each other.
   * the run name, which is what the dashboard shows and therefore has to
     identify the scenario AND the site.
+  * the review screenshot's upload URL. Every scenario uploads a screenshot of
+    the loaded page to screenshot-server/, because a cluster run keeps no files,
+    and the scenarios fail at parse time without the variable.
 
 Examples:
 
@@ -33,8 +36,13 @@ Examples:
 
     # label a batch, so its runs can be found by searching the dashboard for it
     tools/submit.py --url-file sites.txt --name-suffix batch-2026-09-15
+
+    # with review screenshots: each run uploads one to screenshot-server/.
+    # $SCREENSHOT_URL can stand in for the flag.
+    tools/submit.py --url-file sites.txt --screenshot-url https://shots.example.org/upload
 """
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -105,6 +113,7 @@ def build_command(scenario, url, args):
         '--machine-id', str(args.machine_id),
         '--schedule-mode', args.schedule_mode,
         '--variables', f'__GMT_VAR_PAGE__={url}',
+        '--variables', f'__GMT_VAR_SCREENSHOT_URL__={args.screenshot_url}',
     ]
     if args.email:
         cmd += ['--email', args.email]
@@ -134,6 +143,10 @@ def main():
     p.add_argument('--schedule-mode', default='one-off',
                    help='Schedule mode passed through to the API (default: one-off).')
     p.add_argument('--email', help='Optional address to notify on completion.')
+    p.add_argument('--screenshot-url', metavar='URL', default=os.environ.get('SCREENSHOT_URL', 'off'),
+                   help='Upload endpoint of screenshot-server/, e.g. https://host/upload, that every run sends '
+                        'a screenshot of the loaded page to. Default: $SCREENSHOT_URL, else off, which skips '
+                        'the upload.')
     p.add_argument('--dry-run', action='store_true', help='Print the commands instead of running them.')
     args = p.parse_args()
 
@@ -143,6 +156,14 @@ def main():
             # An empty label would submit a whole batch that its own label
             # cannot find.
             p.error('--name-suffix is empty')
+
+    if args.screenshot_url == 'off':
+        print('review screenshots are off; pass --screenshot-url or set $SCREENSHOT_URL to get them',
+              file=sys.stderr)
+    elif not args.screenshot_url.startswith(('https://', 'http://')):
+        # Checked before anything is sent: every run of a batch with a broken URL
+        # would upload nothing and still count as a successful run.
+        p.error(f'--screenshot-url is not an http(s) URL: {args.screenshot_url}')
 
     urls = [args.url] if args.url else read_urls(args.url_file)
     if not urls:

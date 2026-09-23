@@ -33,12 +33,13 @@
 # pressed on the host's screen. Do not touch the host's mouse or keyboard while
 # a run is in progress.
 #
-# RUN IT WITH (one variable, the page):
+# RUN IT WITH (the page, and where the review screenshot goes; off skips it):
 #
 #   ./runner.py \
 #     --uri /home/didi/code/1000-websites \
 #     --filename parrot/usage_scenario_headful.yml \
 #     --variable __GMT_VAR_PAGE__=https://www.green-coding.io \
+#     --variable __GMT_VAR_SCREENSHOT_URL__=off \
 #     --allow-unsafe --dev-no-sleeps --dev-no-system-checks=check_ssh_session
 #
 # --allow-unsafe is needed in CLI mode ONLY: for docker-run-args and for the
@@ -160,6 +161,17 @@ flow:
         shell: bash
       - type: console
         command: bash /tmp/repo/common/phase-clock.sh finish visit
+
+  # Unmeasured, and identical to parrot/usage_scenario.yml except for the
+  # variant it reports. The screenshot is of the host's whole screen on :0.
+  - name: Screenshot for review
+    container: window-container
+    hidden: true
+    commands:
+      - type: console
+        command: bash /tmp/repo/parrot/common/screenshot.sh /tmp/review-screenshot.png
+      - type: console
+        command: bash /tmp/repo/common/upload-screenshot.sh /tmp/review-screenshot.png parrot headful __GMT_VAR_PAGE__ __GMT_VAR_SCREENSHOT_URL__
 
   - name: Scroll down and wait 5 s
     container: window-container
