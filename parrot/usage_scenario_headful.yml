@@ -163,7 +163,9 @@ flow:
         command: bash /tmp/repo/common/phase-clock.sh finish visit
 
   # Unmeasured, and identical to parrot/usage_scenario.yml except for the
-  # variant it reports. The screenshot is of the host's whole screen on :0.
+  # variant it reports. The screenshot is of Chrome's window on :0, not of the
+  # host's whole screen, which a Wayland desktop does not let a client read:
+  # see parrot/common/screenshot.sh.
   - name: Screenshot for review
     container: window-container
     hidden: true
