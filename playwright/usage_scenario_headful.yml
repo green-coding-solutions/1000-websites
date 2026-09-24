@@ -1,17 +1,22 @@
 ---
 # Measure __GMT_VAR_PAGE__ in a headful Chromium driven by Playwright, on the
-# HOST's X server instead of an Xvfb inside the container.
+# HOST's X server.
 #
-# This is playwright/usage_scenario.yml step for step. Only where Chromium draws
-# differs, and these are the changes that follow from it:
+# This is playwright/usage_scenario.yml step for step. Only whether and where
+# Chromium draws differs, and these are the changes that follow from it:
 #
 #   * compose-file is GMT's gmt-playwright-headful-with-cache.yml instead of
 #     gmt-playwright-with-cache.yml: the same partial plus a /tmp/.X11-unix
 #     mount and DISPLAY=":0".
-#   * flow-prepend starts the browser without xvfb-run, so it opens on :0.
+#   * flow-prepend starts the browser with --headless false, so it opens a
+#     window on :0. That is full Chromium, not the chrome-headless-shell the
+#     headless scenario gets.
 #   * "Match the Parrot viewport" also fails the run unless the page reports
-#     1432x809 at devicePixelRatio 1. That held in the Xvfb, which has no
+#     1432x809 at devicePixelRatio 1. That held in an Xvfb, which has no
 #     Xft.dpi; a host's X server may have one, and Chrome scales by it.
+#
+# NOT ON MACHINE 12: its :0 is GNOME on Wayland, where Chromium runs without
+# error but never gets a frame onto the display. See the repository README.
 #
 # THE HOST HAS TO LET THE CONTAINER IN. It connects over the socket as root and
 # without a cookie, so on the host, in the session that owns :0:

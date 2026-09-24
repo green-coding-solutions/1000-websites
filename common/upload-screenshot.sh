@@ -3,8 +3,9 @@
 #
 #   upload-screenshot.sh <png> <driver> <variant> <page> <upload-url>
 #
-# <driver> is parrot or playwright, <variant> xvfb or headful. If <png>.title
-# exists, its contents go along as the page title for the gallery caption.
+# <driver> is parrot or playwright, <variant> xvfb, headful or headless. If
+# <png>.title exists, its contents go along as the page title for the gallery
+# caption.
 #
 # WHY UPLOAD. A run on the GMT cluster keeps no files, so what a run rendered can
 # only be seen if it is sent somewhere while the run is still alive.

@@ -1,12 +1,12 @@
 ---
-# Measure __GMT_VAR_PAGE__ in a headful Chromium driven by Playwright, with a
+# Measure __GMT_VAR_PAGE__ in a headless Chromium driven by Playwright, with a
 # warm caching proxy in front of it.
 #
 # This is GMT's templates/website/usage_scenario_cached.yml - the webnrg
 # benchmark - with four deliberate changes, all of them made so that this
 # scenario and parrot/usage_scenario.yml measure the same thing:
 #
-#   1. Chromium instead of Firefox, and headful instead of headless.
+#   1. Chromium instead of Firefox.
 #   2. The measured idle is 30 s rather than 5 s.
 #   3. The scroll phase is a fixed 5 s of wheel ticks rather than a loop that
 #      runs until the bottom of the page, so that both scenarios scroll for the
@@ -17,6 +17,20 @@
 # The sibling scenario in this repository drives a real Google Chrome through
 # real X input instead of through Playwright. See the repository README for
 # what is and is not comparable between the two.
+#
+# HEADLESS, AND WHAT THAT MEANS. With --headless true, GMT's launcher starts
+# Playwright's chrome-headless-shell, a separate build without browser UI, and
+# not Chromium itself: 153.0.8010.12 for Playwright 1.63.0. On top of the
+# switch list parrot/common/launch-browser.sh copies, it passes --headless,
+# --hide-scrollbars, --mute-audio and a --blink-settings that makes pages see a
+# mouse (hover and a fine pointer). Its user agent says HeadlessChrome/153,
+# which bot managers look for. Measured from /proc/<pid>/cmdline and from a page
+# in the playwright:v1.63.0-noble image, 2026-09-24. Full Chromium in headless
+# mode would need GMT's launcher to pass channel 'chromium', which it does not.
+#
+# Headless and not headful in an Xvfb, as before 2026-09-24: this is the
+# variant chosen for the sweep. playwright/usage_scenario_headful.yml is the
+# headful one, on the host's display.
 #
 # RUN IT WITH (the page, and where the review screenshot goes; off skips it):
 #
@@ -29,7 +43,7 @@
 #
 name: "__GMT_VAR_PAGE__ - 1000 Websites Playwright Chrome"
 author: Didi Hoffmann <didi@green-coding.io>
-description: "Opens __GMT_VAR_PAGE__ in a headful Chromium from a warm proxy cache, idles 30 s, then scrolls for 5 s"
+description: "Opens __GMT_VAR_PAGE__ in a headless Chromium from a warm proxy cache, idles 30 s, then scrolls for 5 s"
 
 custom_metrics:
   website_load:
@@ -44,9 +58,8 @@ flow-prepend:
     hidden: true
     commands:
       - type: console
-        command: xvfb-run -a -s "-screen 0 1440x900x24" node /tmp/gmt-utils/gmt-playwright-ipc.js --headless false --browser chromium --proxy http://squid:3128
-        shell: bash
-        note: Starting headful Chromium in background process with IPC
+        command: node /tmp/gmt-utils/gmt-playwright-ipc.js --headless true --browser chromium --proxy http://squid:3128
+        note: Starting headless Chromium in background process with IPC
         detach: true
       - type: console
         command: timeout 60 bash -c 'until [ -p "/tmp/playwright-ipc-ready" ]; do sleep 1; done && echo "Browser ready!"'
@@ -67,10 +80,11 @@ flow:
   # strip and toolbar, and 1440 minus the 8 px a real Chrome reserves for its
   # vertical scrollbar.
   #
-  # Those 8 px are why this is not 1440: Playwright resizes a headful viewport
-  # with Emulation.setDeviceMetricsOverride, and an emulated viewport gets
-  # overlay scrollbars that take no layout width, so asking for 1440 would hand
-  # the page 8 CSS px more than Parrot does.
+  # Those 8 px are why this is not 1440: this Chromium's scrollbars take no
+  # layout width (headless runs with --hide-scrollbars; the headful one got
+  # overlay scrollbars from the emulated viewport), so asking for 1440 would
+  # hand the page 8 CSS px more than Parrot does. Headless, the page reports
+  # 1432x809 at devicePixelRatio 1, as it did headful.
   #
   # A step of its own because gmtPlaywrightCache() replaces the context and
   # therefore the page, and the new page comes back at the 1280x800 hard-coded
@@ -106,9 +120,8 @@ flow:
         command: bash /tmp/repo/common/phase-clock.sh finish visit
 
   # Not part of the benchmark: see the same hidden phase in
-  # parrot/usage_scenario.yml. page.screenshot takes the viewport only, without
-  # Chrome's toolbar, because this image has no X screen grabber; the viewport is
-  # what the page renders into anyway. It runs before the status check so that a
+  # parrot/usage_scenario.yml. page.screenshot takes the viewport; a headless
+  # Chromium has no toolbar to show. It runs before the status check so that a
   # page failing that check still leaves a screenshot of what it served.
   #
   # The try/catch is load-bearing: a Playwright command that throws never
@@ -121,7 +134,7 @@ flow:
       - type: playwright
         command: 'try { await page.screenshot({ path: "/tmp/review-screenshot.png", timeout: 15000 }); fs.writeFileSync("/tmp/review-screenshot.png.title", await page.title()); } catch (e) { console.log(`[screenshot] WARNING: ${e}`); }'
       - type: console
-        command: bash /tmp/repo/common/upload-screenshot.sh /tmp/review-screenshot.png playwright xvfb __GMT_VAR_PAGE__ __GMT_VAR_SCREENSHOT_URL__
+        command: bash /tmp/repo/common/upload-screenshot.sh /tmp/review-screenshot.png playwright headless __GMT_VAR_PAGE__ __GMT_VAR_SCREENSHOT_URL__
 
   - name: Check HTTP Status Code
     container: gmt-playwright-nodejs

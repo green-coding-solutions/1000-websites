@@ -37,7 +37,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 DRIVERS = ('parrot', 'playwright')
-VARIANTS = ('xvfb', 'headful')
+VARIANTS = ('xvfb', 'headful', 'headless')
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 MAX_TITLE = 300
 MAX_SITE = 150

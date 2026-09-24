@@ -175,7 +175,7 @@ class UploadTest(ServerTestCase):
             'no driver': upload_path(driver=None),
             'unknown driver': upload_path(driver='selenium'),
             'no variant': upload_path(variant=None),
-            'unknown variant': upload_path(variant='headless'),
+            'unknown variant': upload_path(variant='wayland'),
             'no query': '/upload',
         }
         for case, path in cases.items():

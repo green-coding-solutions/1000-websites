@@ -107,7 +107,7 @@ curl -sS -X PUT --data-binary @shot.png \
 | --- | --- |
 | `page` | Required. The URL that was benchmarked, at most 2048 characters. |
 | `driver` | Required. `parrot` or `playwright`. |
-| `variant` | Required. `xvfb` or `headful`. |
+| `variant` | Required. `xvfb`, `headful` or `headless`. |
 | `title` | Optional. The page title, cut to 300 characters. |
 
 The body is the raw PNG with a `Content-Length` (chunked bodies are refused).

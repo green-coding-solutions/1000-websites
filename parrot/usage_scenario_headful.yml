@@ -29,6 +29,9 @@
 # successfully on 2026-06-04 and failed exactly like this on 2026-06-18 and
 # 2026-08-19, so check that its :0 is up before submitting this file there.
 #
+# NOT ON MACHINE 12: its :0 is GNOME on Wayland, where this runs without error
+# but Chrome never gets a frame onto the display. See the repository README.
+#
 # Parrot's input is real X input on that server: the pointer moves and keys are
 # pressed on the host's screen. Do not touch the host's mouse or keyboard while
 # a run is in progress.
