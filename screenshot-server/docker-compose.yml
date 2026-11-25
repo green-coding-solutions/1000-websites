@@ -5,8 +5,8 @@
 #   docker compose logs -f         follow the request log
 #   docker compose down            stop it
 #
-# Screenshots and index.jsonl land in ./screenshots next to this file. Deleting
-# that directory removes all data. The server has no authentication and speaks
+# Screenshots, index.jsonl and the review tags in tags.jsonl land in
+# ./screenshots next to this file. Deleting that directory removes all data. The server has no authentication and speaks
 # plain HTTP: run it behind your HTTPS reverse proxy, and only for as long as a
 # benchmark run needs it.
 services:

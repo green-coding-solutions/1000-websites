@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Receive the benchmark's screenshots and show them in one gallery.
+"""Receive the benchmark's screenshots, show them in one gallery, and review them.
 
     screenshot-server/server.py --host 127.0.0.1 --data-dir ./screenshots
 
@@ -10,16 +10,25 @@ wall, an error page or a blank window stands out while scrolling through a few
 hundred sites. A run whose screenshot shows one of those measured that page and
 not the site.
 
+The gallery is also where the shots are reviewed. Every site can carry one tag,
+such as cookie-banner or bot-wall, and a note. Tags are kept append-only in
+tags.jsonl, and /export.txt turns the sites with a tag into a URL list that
+tools/batch.py can measure again.
+
 There is no authentication, by design: anyone who can reach the server can
-upload and view. It is meant to live for one benchmark run, behind the operator's
-own HTTPS reverse proxy, and to be deleted with its screenshots afterwards. The
-server itself speaks plain HTTP only.
+upload, tag and view. It is meant to live for one benchmark run, behind the
+operator's own HTTPS reverse proxy, and to be deleted with its screenshots
+afterwards. The server itself speaks plain HTTP only.
 
 Standard library only and Python 3.9 or newer, so it runs on whatever box has a
 python3. screenshot-server/README.md has the HTTP API and docker-compose.yml.
 """
 import argparse
+import base64
+import csv
+import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -34,16 +43,29 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-DRIVERS = ('parrot', 'playwright')
+DRIVERS = ('parrot', 'playwright', 'prescan')
+# The variants the benchmark started with. Any other name that matches
+# VARIANT_RE is accepted too and sorts after these.
 VARIANTS = ('xvfb', 'headful', 'headless')
+VARIANT_RE = re.compile(r'[a-z0-9][a-z0-9-]{0,31}')
+# Review tags, in the order of their keyboard shortcuts 1 to 6.
+TAGS = ('ok', 'cookie-banner', 'bot-wall', 'error-page', 'blank', 'other')
+UNTAGGED = 'untagged'
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 MAX_TITLE = 300
 MAX_SITE = 150
+MAX_NOTE = 500
 # Long enough for any real page URL, short enough to keep index lines sane.
 MAX_PAGE = 2048
+# A tag form is a site, a tag, a note of 500 characters and two short fields.
+# Percent-encoded, a 500 character note is at most 4500 bytes.
+MAX_FORM_BYTES = 16_384
 INDEX = 'index.jsonl'
+TAGS_FILE = 'tags.jsonl'
+# The gallery filters that survive a tag form's redirect back.
+FILTERS = ('q', 'driver', 'variant', 'tag')
 
 # What derive_site() can produce. Checked again on every path that comes from a
 # request or from the index, so neither can name a file outside the data dir.
@@ -53,9 +75,6 @@ SHOT_RE = re.compile(r'[A-Za-z0-9-][A-Za-z0-9._-]{0,200}\.png')
 # A rejected client may still be sending its body. See Handler._linger().
 LINGER_SECONDS = 2.0
 
-CSP = ("default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
-       "form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-
 CSS = """
 :root{color-scheme:light dark}
 body{font:14px/1.4 system-ui,sans-serif;margin:0;padding:12px 16px}
@@ -64,6 +83,7 @@ h1{font-size:20px;margin:0 0 4px}
 h2{font-size:16px;margin:0;overflow-wrap:anywhere}
 form{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 4px}
 input,select,button{font:inherit}
+p{margin:4px 0}
 section{border-top:1px solid #8886;padding:12px 0}
 .meta{margin:2px 0 8px;color:#888;overflow-wrap:anywhere}
 .shots{display:flex;flex-wrap:wrap;gap:12px}
@@ -72,7 +92,165 @@ img,.none{display:block;width:100%;height:auto;aspect-ratio:16/9;object-fit:cove
   object-position:top;border:1px solid #8886;background:#8882;box-sizing:border-box}
 .none{display:flex;align-items:center;justify-content:center;color:#888}
 figcaption{font-size:12px;margin-top:4px;overflow-wrap:anywhere}
+.counts{position:sticky;top:0;z-index:1;background:Canvas;padding:6px 0;
+  border-bottom:1px solid #8886;display:flex;flex-wrap:wrap;gap:4px 14px}
+.counts a{text-decoration:none}
+.counts a.on{text-decoration:underline}
+.keys,.exports{color:#888;font-size:12px}
+.row{padding-left:10px;border-left:4px solid transparent;scroll-margin-top:44px}
+.row.cur{border-left-color:#2a7de1;background:#2a7de114}
+.row.failed{border-left-color:#d33}
+.tag{display:inline-block;font-size:12px;font-weight:normal;padding:0 6px;
+  border-radius:8px;margin-left:6px;vertical-align:middle;background:#8883}
+.t-ok{background:#2a24}.t-cookie-banner{background:#e906}.t-bot-wall{background:#d335}
+.t-error-page{background:#a3c5}.t-blank{background:#8886}.t-other{background:#39f5}
+.t-untagged{background:none;border:1px dashed #888}
+.tagger{align-items:center;margin:6px 0 8px}
+.tagger input[name=note]{width:22em;max-width:100%}
+.tagger button.on{font-weight:bold;outline:2px solid #2a7de1}
+kbd{font:11px monospace;color:#888}
+.status{color:#888;font-size:12px}
+.failed .status{color:#d33}
 """
+
+# The gallery's only script. Without it every tag button is a plain form post.
+GALLERY_JS = """
+(function () {
+  'use strict';
+  var TAGS = TAGS_JSON;
+  var rows = Array.prototype.slice.call(document.querySelectorAll('section.row'));
+  var cur = -1;
+  if (!rows.length) { return; }
+
+  function onScreen(row) {
+    var box = row.getBoundingClientRect();
+    return box.bottom > 60 && box.top < window.innerHeight;
+  }
+  function firstOnScreen() {
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getBoundingClientRect().bottom > 60) { return i; }
+    }
+    return rows.length - 1;
+  }
+  function focusRow(i, scroll) {
+    if (i < 0 || i >= rows.length) { return; }
+    if (cur >= 0) { rows[cur].classList.remove('cur'); }
+    cur = i;
+    rows[i].classList.add('cur');
+    if (scroll) { rows[i].scrollIntoView({block: 'start'}); }
+    history.replaceState(null, '', '#' + rows[i].id);
+  }
+  function bump(tag, delta) {
+    var count = document.querySelector('[data-count="' + tag + '"]');
+    if (count) { count.textContent = String(Number(count.textContent) + delta); }
+  }
+  function show(row, tag, note) {
+    var old = row.getAttribute('data-tag') || 'untagged';
+    if (old !== tag) { bump(old, -1); bump(tag, 1); }
+    row.setAttribute('data-tag', tag);
+    var badge = row.querySelector('.tag');
+    badge.textContent = tag;
+    badge.className = 'tag t-' + tag;
+    var form = row.querySelector('form.tagger');
+    if (document.activeElement !== form.elements.note) { form.elements.note.value = note; }
+    var save = form.querySelector('button.save');
+    save.value = tag;
+    save.disabled = false;
+    Array.prototype.forEach.call(form.querySelectorAll('button.set'), function (button) {
+      button.classList.toggle('on', button.value === tag);
+      button.setAttribute('aria-pressed', String(button.value === tag));
+    });
+  }
+  function setTag(row, tag) {
+    var form = row.querySelector('form.tagger');
+    var status = row.querySelector('.status');
+    var body = new URLSearchParams();
+    body.set('site', row.getAttribute('data-site'));
+    body.set('tag', tag);
+    body.set('note', form.elements.note.value);
+    row.classList.remove('failed');
+    status.textContent = 'saving ' + tag;
+    fetch('/tag', {method: 'POST', body: body, headers: {'Accept': 'application/json'}})
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) { throw new Error(data.error || 'HTTP ' + response.status); }
+          return data;
+        });
+      })
+      .then(function (data) {
+        show(row, data.tag, data.note);
+        status.textContent = 'saved';
+      })
+      .catch(function (error) {
+        row.classList.add('failed');
+        status.textContent = 'not saved: ' + error.message;
+      });
+  }
+
+  rows.forEach(function (row, i) {
+    var form = row.querySelector('form.tagger');
+    form.addEventListener('submit', function (event) {
+      // A browser that cannot say which button was pressed posts the form.
+      if (!('submitter' in event)) { return; }
+      event.preventDefault();
+      var button = event.submitter;
+      if (!button || !button.value) { return; }
+      focusRow(i, false);
+      setTag(row, button.value);
+      if (document.activeElement === form.elements.note) { form.elements.note.blur(); }
+    });
+    row.addEventListener('click', function () {
+      if (cur !== i) { focusRow(i, false); }
+    });
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) { return; }
+    var target = event.target;
+    if (target.name === 'note' && target.form && target.form.classList.contains('tagger')) {
+      // Enter saves the note with the row's tag. An untagged row has no tag to
+      // save it with, so Enter and Escape both hand the keys back to the page.
+      var save = target.form.querySelector('button.save');
+      if (event.key === 'Escape' || (event.key === 'Enter' && save.disabled)) {
+        event.preventDefault();
+        target.blur();
+      }
+      return;
+    }
+    if (/^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName) || target.isContentEditable) { return; }
+    var key = event.key;
+    var digit = key.length === 1 && key >= '1' && key <= String(TAGS.length);
+    if (key !== 'j' && key !== 'k' && key !== 'n' && !digit) { return; }
+    event.preventDefault();
+    // After scrolling away with the mouse, the first key picks up where the
+    // reader is instead of acting on a row out of sight.
+    if (cur < 0 || !onScreen(rows[cur])) { focusRow(firstOnScreen(), true); return; }
+    if (key === 'j') {
+      focusRow(cur + 1, true);
+    } else if (key === 'k') {
+      focusRow(cur - 1, true);
+    } else if (key === 'n') {
+      var note = rows[cur].querySelector('form.tagger').elements.note;
+      note.focus();
+      note.select();
+    } else {
+      setTag(rows[cur], TAGS[Number(key) - 1]);
+      focusRow(cur + 1, true);
+    }
+  });
+
+  for (var i = 0; i < rows.length; i++) {
+    if ('#' + rows[i].id === location.hash) { focusRow(i, false); break; }
+  }
+}());
+""".replace('TAGS_JSON', json.dumps(list(TAGS)))
+GALLERY_JS_HASH = base64.b64encode(hashlib.sha256(GALLERY_JS.encode('utf-8')).digest()).decode()
+
+# The one script allowed is the gallery's, by its hash, and it may talk to this
+# server only.
+CSP = ("default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
+       f"script-src 'sha256-{GALLERY_JS_HASH}'; connect-src 'self'; "
+       "form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 
 
 @dataclass
@@ -108,6 +286,10 @@ def derive_site(page):
     return site or 'unknown'
 
 
+def has_control_chars(text):
+    return any(ord(char) < 32 or ord(char) == 127 for char in text)
+
+
 def parse_upload_query(query):
     """Return (params, None) for a valid upload query string, or (None, problem)."""
     fields = parse_qs(query, keep_blank_values=True)
@@ -122,14 +304,47 @@ def parse_upload_query(query):
         return None, 'page is required'
     if len(page) > MAX_PAGE:
         return None, f'page is longer than {MAX_PAGE} characters'
-    if any(ord(char) < 32 or ord(char) == 127 for char in page):
+    if has_control_chars(page):
         return None, 'page contains control characters'
     if driver not in DRIVERS:
         return None, 'driver must be one of: ' + ', '.join(DRIVERS)
-    if variant not in VARIANTS:
-        return None, 'variant must be one of: ' + ', '.join(VARIANTS)
+    # The variant goes into the file name, so it is held to a pattern that
+    # cannot leave the site directory or hide the file.
+    if variant is None or not VARIANT_RE.fullmatch(variant):
+        return None, ('variant must be 1 to 32 lowercase letters, digits or dashes, '
+                      'starting with a letter or digit, such as ' + ', '.join(VARIANTS))
     title = (first('title') or '').strip()[:MAX_TITLE]
     return {'page': page, 'driver': driver, 'variant': variant, 'title': title}, None
+
+
+def parse_tag_form(body):
+    """Return (params, None) for a valid tag form body, or (None, problem)."""
+    try:
+        fields = parse_qs(body.decode('utf-8'), keep_blank_values=True,
+                          errors='strict', max_num_fields=20)
+    except ValueError:
+        # UnicodeDecodeError is a ValueError, and so is a form with too many fields.
+        return None, 'the form is not valid UTF-8 or has too many fields'
+
+    def first(name):
+        values = fields.get(name)
+        return values[0] if values else ''
+
+    site, tag = first('site'), first('tag')
+    note = first('note').strip()
+    if not SITE_RE.fullmatch(site):
+        return None, 'site is not a valid site name'
+    if tag not in TAGS:
+        return None, 'tag must be one of: ' + ', '.join(TAGS)
+    if len(note) > MAX_NOTE:
+        return None, f'note is longer than {MAX_NOTE} characters'
+    if has_control_chars(note):
+        return None, 'note contains control characters'
+    # Where a browser without JavaScript goes back to. Both are only ever used
+    # rebuilt from known parts, see gallery_location().
+    following = first('next')
+    anchor = following if SITE_RE.fullmatch(following) else site
+    return {'site': site, 'tag': tag, 'note': note, 'back': first('back'), 'anchor': anchor}, None
 
 
 def store_screenshot(data_dir, lock, params, body, remote):
@@ -180,22 +395,40 @@ def store_screenshot(data_dir, lock, params, body, remote):
     return entry['file']
 
 
-def read_index(data_dir):
-    """All index entries that are safe to render, in upload order."""
+def store_tag(data_dir, lock, params, remote):
+    """Append one tag line to tags.jsonl and return it. Nothing is ever rewritten."""
+    with lock:
+        entry = {
+            'time': f'{utcnow():%Y-%m-%dT%H:%M:%SZ}',
+            'site': params['site'],
+            'tag': params['tag'],
+            'note': params['note'],
+            'remote': remote,
+        }
+        with open(data_dir / TAGS_FILE, 'a', encoding='utf-8') as tags:
+            tags.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    return entry
+
+
+def read_jsonl(path):
+    """Every JSON object in a JSONL file, skipping lines that do not parse."""
     entries = []
     try:
-        with open(data_dir / INDEX, encoding='utf-8', errors='replace') as index:
-            for line in index:
+        with open(path, encoding='utf-8', errors='replace') as lines:
+            for line in lines:
                 try:
-                    entry = json.loads(line)
+                    entries.append(json.loads(line))
                 except ValueError:
                     # A line still being appended, or a hand edit gone wrong.
                     continue
-                if usable_entry(entry):
-                    entries.append(entry)
     except FileNotFoundError:
         pass
     return entries
+
+
+def read_index(data_dir):
+    """All index entries that are safe to render, in upload order."""
+    return [entry for entry in read_jsonl(data_dir / INDEX) if usable_entry(entry)]
 
 
 def usable_entry(entry):
@@ -206,17 +439,53 @@ def usable_entry(entry):
     return site == entry['site'] and bool(SITE_RE.fullmatch(site) and SHOT_RE.fullmatch(name))
 
 
+def read_tags(data_dir):
+    """The current tag line of every site. The last line of a site wins."""
+    return {entry['site']: entry for entry in read_jsonl(data_dir / TAGS_FILE)
+            if usable_tag(entry)}
+
+
+def usable_tag(entry):
+    keys = ('time', 'site', 'tag', 'note')
+    return (isinstance(entry, dict) and all(isinstance(entry.get(k), str) for k in keys)
+            and entry['tag'] in TAGS and bool(SITE_RE.fullmatch(entry['site'])))
+
+
+def tag_of(tags, site):
+    entry = tags.get(site)
+    return entry['tag'] if entry else UNTAGGED
+
+
 def combo_key(combo):
     driver, variant = combo
     return (DRIVERS.index(driver) if driver in DRIVERS else len(DRIVERS), driver,
             VARIANTS.index(variant) if variant in VARIANTS else len(VARIANTS), variant)
 
 
-def html_page(title, content):
+def variant_options(entries):
+    """The known variants first, then every other one that was uploaded, sorted."""
+    others = sorted({entry['variant'] for entry in entries} - set(VARIANTS))
+    return VARIANTS + tuple(others)
+
+
+def summarize(entries):
+    """Per site, in name order: its latest page, its shot count and its latest
+    shot per driver and variant."""
+    sites = {}
+    for entry in entries:
+        site = sites.setdefault(entry['site'], {'page': '', 'shots': 0, 'latest': {}})
+        site['page'] = entry['page']
+        site['shots'] += 1
+        site['latest'][(entry['driver'], entry['variant'])] = entry
+    return dict(sorted(sites.items()))
+
+
+def html_page(title, content, script=''):
+    script = f'<script>{script}</script>' if script else ''
     return ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>{html.escape(title)}</title><style>{CSS}</style></head>'
-            f'<body>{content}</body></html>\n')
+            f'<body>{content}{script}</body></html>\n')
 
 
 def figure_html(entry):
@@ -237,6 +506,10 @@ def site_link(site, text):
     return f'<a href="/site/{html.escape(quote(site))}">{html.escape(text)}</a>'
 
 
+def tag_badge(tag):
+    return f'<span class="tag t-{html.escape(tag)}">{html.escape(tag)}</span>'
+
+
 def select_html(name, current, options):
     choices = [f'<option value="">any {name}</option>']
     for option in options:
@@ -245,13 +518,62 @@ def select_html(name, current, options):
     return f'<select name="{name}">{"".join(choices)}</select>'
 
 
-def render_gallery(entries, q='', driver='', variant=''):
+def filter_query(**filters):
+    """The gallery's query string for these filters, without the empty ones."""
+    return urlencode([(key, filters[key]) for key in FILTERS if filters.get(key)])
+
+
+def gallery_location(back, anchor):
+    """Where a tag form posted without JavaScript redirects to: the gallery with
+    the filters it was posted from, scrolled to the anchor row.
+
+    The location is rebuilt from the known filters and a valid site name, so a
+    crafted form cannot redirect anywhere else or inject a header.
+    """
+    try:
+        fields = parse_qs(back, max_num_fields=20)
+    except ValueError:
+        fields = {}
+    query = filter_query(**{key: (fields.get(key) or [''])[0] for key in FILTERS})
+    return ('/?' + query if query else '/') + '#s-' + quote(anchor)
+
+
+def tagger_html(site, entry, back, following):
+    """The tag buttons and the note field of one gallery row."""
+    current = entry['tag'] if entry else ''
+    note = entry['note'] if entry else ''
+    # The first submit button is the form's default, which Enter in the note
+    # field presses. It saves the note with the current tag, and on an untagged
+    # row it is disabled, so Enter there does not tag the site by accident.
+    if current:
+        save = f'<button class="save" name="tag" value="{html.escape(current)}">save note</button>'
+    else:
+        save = '<button class="save" name="tag" value="" disabled>save note</button>'
+    buttons = []
+    for number, tag in enumerate(TAGS, 1):
+        on = tag == current
+        buttons.append(f'<button class="set{" on" if on else ""}" name="tag" '
+                       f'value="{tag}" aria-pressed="{str(on).lower()}">'
+                       f'<kbd>{number}</kbd> {tag}</button>')
+    return ('<form class="tagger" method="post" action="/tag">'
+            f'<input type="hidden" name="site" value="{html.escape(site)}">'
+            f'<input type="hidden" name="back" value="{html.escape(back)}">'
+            f'<input type="hidden" name="next" value="{html.escape(following)}">'
+            f'<input name="note" value="{html.escape(note)}" maxlength="{MAX_NOTE}" '
+            'placeholder="note" aria-label="note">'
+            + save + ''.join(buttons)
+            + '<span class="status" aria-live="polite"></span></form>')
+
+
+def render_gallery(entries, q='', driver='', variant='', tag='', tags=None):
+    tags = tags or {}
     shot_counts = Counter(entry['site'] for entry in entries)
     needle = q.strip().lower()
     matching = [e for e in entries
                 if (not needle or needle in e['site'].lower() or needle in e['page'].lower())
                 and (not driver or e['driver'] == driver)
-                and (not variant or e['variant'] == variant)]
+                and (not variant or e['variant'] == variant)
+                and (not tag or tag_of(tags, e['site']) == tag)]
     # Later lines are later uploads, so the last one per combination wins.
     latest, pages = {}, {}
     for entry in matching:
@@ -262,25 +584,51 @@ def render_gallery(entries, q='', driver='', variant=''):
     combos = sorted({combo for shots in latest.values() for combo in shots}, key=combo_key)
 
     totals = f"{plural(len(latest), 'site')}, {plural(len(matching), 'screenshot')}"
-    if needle or driver or variant:
+    if needle or driver or variant or tag:
         totals += f" match, of {plural(len(shot_counts), 'site')} and {len(entries)} in all"
+    # How far the review is, over every site and not only the filtered ones.
+    tag_counts = Counter(tag_of(tags, site) for site in shot_counts)
+    counts = []
+    for name in ('',) + TAGS + (UNTAGGED,):
+        query = filter_query(q=q, driver=driver, variant=variant, tag=name)
+        href = '/?' + query if query else '/'
+        on = ' class="on"' if name == tag else ''
+        count = (f'<b data-count="{name}">{tag_counts[name]}</b>' if name
+                 else f'<b>{len(shot_counts)}</b>')
+        counts.append(f'<a href="{html.escape(href)}"{on}>{name or "all"} {count}</a>')
+    exports = ', '.join(f'<a href="/export.txt?tag={name}">{name}</a>'
+                        for name in TAGS + (UNTAGGED,))
     parts = [
         '<header><h1>Screenshots</h1>',
         f'<p>{html.escape(totals)}</p>',
         '<form method="get" action="/">',
         f'<input type="search" name="q" value="{html.escape(q)}" placeholder="site or page">',
         select_html('driver', driver, DRIVERS),
-        select_html('variant', variant, VARIANTS),
-        '<button>Filter</button></form></header>',
+        select_html('variant', variant, variant_options(entries)),
+        select_html('tag', tag, TAGS + (UNTAGGED,)),
+        '<button>Filter</button></form>',
+        '<p class="keys">Keys: j and k move to the next and previous site, 1 to 6 tag it '
+        'and move on, n edits its note, Enter saves the note and Esc leaves it.</p>',
+        f'<p class="exports">Export <a href="/export.csv">every site as CSV</a>, or the URLs '
+        f'of the sites tagged {exports}.</p>',
+        f'<nav class="counts">{"".join(counts)}</nav></header>',
     ]
     if not latest:
         parts.append('<p>No screenshots match.</p>' if entries else '<p>No screenshots yet.</p>')
-    for site in sorted(latest):
+    back = filter_query(q=q, driver=driver, variant=variant, tag=tag)
+    ordered = sorted(latest)
+    for position, site in enumerate(ordered):
         shots = latest[site]
+        entry = tags.get(site)
+        following = ordered[position + 1] if position + 1 < len(ordered) else ''
         count = plural(shot_counts[site], 'shot')
-        parts.append(f'<section><h2>{site_link(site, site)}</h2>'
+        parts.append(f'<section class="row" id="s-{html.escape(site)}" '
+                     f'data-site="{html.escape(site)}" '
+                     f'data-tag="{html.escape(entry["tag"]) if entry else ""}">'
+                     f'<h2>{site_link(site, site)}{tag_badge(tag_of(tags, site))}</h2>'
                      f'<p class="meta">{site_link(site, count)}, {html.escape(pages[site])}</p>'
-                     '<div class="shots">')
+                     + tagger_html(site, entry, back, following)
+                     + '<div class="shots">')
         for combo in combos:
             if combo in shots:
                 parts.append(figure_html(shots[combo]))
@@ -288,19 +636,70 @@ def render_gallery(entries, q='', driver='', variant=''):
                 missing = html.escape(f'no {combo[0]}, {combo[1]} shot')
                 parts.append(f'<figure><div class="none">{missing}</div></figure>')
         parts.append('</div></section>')
-    return html_page('Screenshots', ''.join(parts))
+    return html_page('Screenshots', ''.join(parts), GALLERY_JS)
 
 
-def render_site(entries, site):
+def render_site(entries, site, tags=None):
     """Every shot of one site, newest first, or None for a site with no shots."""
     shots = [entry for entry in entries if entry['site'] == site]
     if not shots:
         return None
     shots.reverse()
-    content = (f'<header><p><a href="/">All sites</a></p><h1>{html.escape(site)}</h1>'
-               f"<p>{plural(len(shots), 'screenshot')}</p></header>"
+    entry = (tags or {}).get(site)
+    review = tag_badge(tag_of(tags or {}, site))
+    if entry and entry['note']:
+        review += ' ' + html.escape(entry['note'])
+    if entry:
+        review += f' <span class="meta">({html.escape(entry["time"])})</span>'
+    back = '/#s-' + quote(site)
+    content = (f'<header><p><a href="{html.escape(back)}">All sites</a></p>'
+               f'<h1>{html.escape(site)}</h1>'
+               f"<p>{plural(len(shots), 'screenshot')}</p><p>Review: {review}</p></header>"
                '<div class="shots">' + ''.join(figure_html(entry) for entry in shots) + '</div>')
     return html_page(site, content)
+
+
+def export_txt(entries, tags, wanted, now):
+    """The page URLs of the sites that carry one of the wanted tags, in the format
+    of sites.txt, so that tools/batch.py generate can take the file as it is."""
+    sites = summarize(entries)
+    chosen = [site for site in sites if tag_of(tags, site) in wanted]
+    lines = [
+        f'# Sites tagged {" or ".join(wanted)} in the screenshot review, '
+        f'exported {now:%Y-%m-%dT%H:%M:%SZ}.',
+        f'# {plural(len(chosen), "site")}. One URL per line, for tools/batch.py generate.',
+        '',
+    ]
+    lines += [sites[site]['page'] for site in chosen]
+    return '\n'.join(lines) + '\n'
+
+
+def csv_cell(value):
+    # A spreadsheet runs a cell that starts with one of these as a formula, and
+    # pages, titles and notes come from unauthenticated clients.
+    value = str(value)
+    return "'" + value if value[:1] in ('=', '+', '-', '@', '\t', '\r') else value
+
+
+def export_csv(entries, tags):
+    """One line per site: its page, its review and its latest shot per driver and variant."""
+    sites = summarize(entries)
+    combos = sorted({combo for site in sites.values() for combo in site['latest']},
+                    key=combo_key)
+    out = io.StringIO()
+    writer = csv.writer(out)
+    header = ['site', 'page', 'tag', 'note', 'tagged_at', 'shots']
+    for driver, variant in combos:
+        header += [f'{driver}/{variant} file', f'{driver}/{variant} time']
+    writer.writerow(header)
+    for name, site in sites.items():
+        entry = tags.get(name) or {'tag': '', 'note': '', 'time': ''}
+        row = [name, site['page'], entry['tag'], entry['note'], entry['time'], site['shots']]
+        for combo in combos:
+            shot = site['latest'].get(combo)
+            row += [shot['file'], shot['time']] if shot else ['', '']
+        writer.writerow([csv_cell(value) for value in row])
+    return out.getvalue()
 
 
 def printable(text, limit=2000):
@@ -330,15 +729,23 @@ class Handler(BaseHTTPRequestHandler):
             if self.command not in ('PUT', 'POST'):
                 return self._not_allowed('PUT, POST')
             return self._upload(url.query)
+        if path == '/tag':
+            if self.command != 'POST':
+                return self._not_allowed('POST')
+            return self._tag()
         if path == '/healthz':
             if self.command != 'GET':
                 return self._not_allowed('GET')
             return self._send(200, 'ok', 'text/plain; charset=utf-8')
-        if path == '/' or path.startswith(('/site/', '/shots/')):
+        if path in ('/', '/export.txt', '/export.csv') or path.startswith(('/site/', '/shots/')):
             if self.command != 'GET':
                 return self._not_allowed('GET')
             if path == '/':
                 return self._gallery(url.query)
+            if path == '/export.txt':
+                return self._export_txt(url.query)
+            if path == '/export.csv':
+                return self._export_csv()
             if path.startswith('/site/'):
                 return self._site(path[len('/site/'):])
             return self._shot(path[len('/shots/'):])
@@ -408,52 +815,80 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
-    # Upload
+    def _read_body(self, length):
+        """The request body, or None after a short body has been answered."""
+        self._unread_body = False
+        try:
+            body = self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
+            return None
+        if len(body) < length:
+            self.close_connection = True
+            self._send_json(400, 'the body ended before Content-Length bytes')
+            return None
+        return body
+
+    # Request checks that need no body
 
     def handle_expect_100(self):
         # curl sends "Expect: 100-continue" with larger bodies and waits for the
         # go-ahead. Running every check that needs no body first means a
-        # rejected upload is never transmitted at all.
+        # rejected request body is never transmitted at all.
         url = urlsplit(self.path)
+        error = None
         if url.path == '/upload' and self.command in ('PUT', 'POST'):
             error, _ = self._upload_precheck(url.query)
-            if error:
-                self._unread_body = self._declares_body()
-                self._send_json(*error)
-                return False
+        elif url.path == '/tag' and self.command == 'POST':
+            error, _ = self._tag_precheck()
+        if error:
+            self._unread_body = self._declares_body()
+            self._send_json(*error)
+            return False
         return super().handle_expect_100()
 
-    def _upload_precheck(self, query):
-        """Return ((status, message), None) for a rejected upload, else (None, (length, params))."""
+    def _length_precheck(self, limit):
+        """Return ((status, message), None) for a missing or too large body, else (None, length)."""
         lengths = self.headers.get_all('Content-Length') or []
-        # A chunked body has no length to check against --max-bytes up front.
+        # A chunked body has no length to check against the limit up front.
         if 'Transfer-Encoding' in self.headers or not lengths:
             return (411, 'Content-Length is required, chunked bodies are not accepted'), None
         if len(lengths) > 1 or not re.fullmatch(r'[0-9]{1,15}', lengths[0].strip()):
             return (400, 'invalid Content-Length'), None
         length = int(lengths[0])
-        limit = self.server.config.max_bytes
         if length > limit:
             return (413, f'body of {length} bytes is over the limit of {limit} bytes'), None
+        return None, length
+
+    def _upload_precheck(self, query):
+        """Return ((status, message), None) for a rejected upload, else (None, (length, params))."""
+        error, length = self._length_precheck(self.server.config.max_bytes)
+        if error:
+            return error, None
         params, problem = parse_upload_query(query)
         if problem:
             return (400, problem), None
         return None, (length, params)
+
+    def _tag_precheck(self):
+        """Return ((status, message), None) for a rejected tag form, else (None, length)."""
+        error, length = self._length_precheck(MAX_FORM_BYTES)
+        if error:
+            return error, None
+        if self.headers.get_content_type() != 'application/x-www-form-urlencoded':
+            return (415, 'the body must be application/x-www-form-urlencoded'), None
+        return None, length
+
+    # Upload
 
     def _upload(self, query):
         error, checked = self._upload_precheck(query)
         if error:
             return self._send_json(*error)
         length, params = checked
-        self._unread_body = False
-        try:
-            body = self.rfile.read(length)
-        except OSError:
-            self.close_connection = True
+        body = self._read_body(length)
+        if body is None:
             return
-        if len(body) < length:
-            self.close_connection = True
-            return self._send_json(400, 'the body ended before Content-Length bytes')
         if not body.startswith(PNG_SIGNATURE):
             return self._send_json(400, 'the body is not a PNG')
         try:
@@ -464,19 +899,67 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(500, 'could not store the screenshot')
         self._send_json(201, {'file': name}, {'Location': '/shots/' + quote(name)})
 
+    # Review
+
+    def _tag(self):
+        error, length = self._tag_precheck()
+        if error:
+            return self._send_json(*error)
+        body = self._read_body(length)
+        if body is None:
+            return
+        params, problem = parse_tag_form(body)
+        if problem:
+            return self._send_json(400, problem)
+        data_dir = self.server.config.data_dir
+        if not any(entry['site'] == params['site'] for entry in read_index(data_dir)):
+            return self._send_json(404, f'site {params["site"]} has no screenshots')
+        try:
+            entry = store_tag(data_dir, self.server.store_lock, params, self.client_address[0])
+        except OSError as error:
+            self.server.log(f'storing a tag for {params["site"]} failed: {error}')
+            return self._send_json(500, 'could not store the tag')
+        # The gallery's script asks for JSON. A plain form post, from a browser
+        # without JavaScript, goes back to the gallery it came from.
+        if 'application/json' in self.headers.get('Accept', ''):
+            return self._send_json(200, {key: entry[key] for key in ('site', 'tag', 'note', 'time')})
+        self._send(303, '', 'text/plain; charset=utf-8',
+                   {'Location': gallery_location(params['back'], params['anchor'])})
+
+    def _export_txt(self, query):
+        wanted = parse_qs(query).get('tag', [])
+        known = TAGS + (UNTAGGED,)
+        if not wanted or any(tag not in known for tag in wanted):
+            return self._send_json(400, 'tag must be given, one or more of: ' + ', '.join(known))
+        # Once each, in the order of the tags, whatever order the query had.
+        wanted = [tag for tag in known if tag in wanted]
+        data_dir = self.server.config.data_dir
+        text = export_txt(read_index(data_dir), read_tags(data_dir), wanted, utcnow())
+        self._send(200, text, 'text/plain; charset=utf-8', {'Cache-Control': 'no-store'})
+
+    def _export_csv(self):
+        data_dir = self.server.config.data_dir
+        text = export_csv(read_index(data_dir), read_tags(data_dir))
+        self._send(200, text, 'text/csv; charset=utf-8', {
+            'Cache-Control': 'no-store',
+            'Content-Disposition': 'attachment; filename="screenshot-review.csv"',
+        })
+
     # Viewing
 
     def _gallery(self, query):
         fields = parse_qs(query)
-        q, driver, variant = ((fields.get(k) or [''])[0] for k in ('q', 'driver', 'variant'))
-        entries = read_index(self.server.config.data_dir)
-        self._send_html(render_gallery(entries, q, driver, variant))
+        q, driver, variant, tag = ((fields.get(k) or [''])[0] for k in FILTERS)
+        data_dir = self.server.config.data_dir
+        self._send_html(render_gallery(read_index(data_dir), q, driver, variant, tag,
+                                       read_tags(data_dir)))
 
     def _site(self, raw):
         site = unquote(raw)
         page = None
         if SITE_RE.fullmatch(site):
-            page = render_site(read_index(self.server.config.data_dir), site)
+            data_dir = self.server.config.data_dir
+            page = render_site(read_index(data_dir), site, read_tags(data_dir))
         if page is None:
             return self._not_found()
         self._send_html(page)
@@ -539,13 +1022,15 @@ def positive_int(text):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description='Receive benchmark screenshots over plain HTTP and show them in a gallery.',
+        description='Receive benchmark screenshots over plain HTTP, show them in a gallery '
+                    'and tag them for review.',
         epilog='There is no authentication: run it only for as long as a benchmark needs '
                'it, behind an HTTPS reverse proxy.')
     parser.add_argument('--host', default='0.0.0.0', help='address to listen on (default: 0.0.0.0)')
     parser.add_argument('--port', type=int, default=8765, help='port to listen on (default: 8765)')
     parser.add_argument('--data-dir', type=Path, default=Path('./screenshots'),
-                        help='where screenshots and index.jsonl go (default: ./screenshots)')
+                        help='where screenshots, index.jsonl and tags.jsonl go '
+                             '(default: ./screenshots)')
     parser.add_argument('--max-bytes', type=positive_int, default=20_000_000,
                         help='largest accepted upload in bytes (default: 20000000)')
     return parser.parse_args(argv)
