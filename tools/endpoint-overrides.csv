@@ -1,0 +1,8 @@
+# Tranco domains whose homepage is not a website people load, for tools/build-site-list.py.
+# decision is exclude (left out even if check.py says ok) or flag (kept, flagged in the
+# candidates CSV). Matched against the Tranco domain.
+domain,decision,reason
+msftconnecttest.com,exclude,Windows network connectivity check (NCSI)
+gstatic.com,exclude,Google static content and connectivity check host (generate_204)
+googleapis.com,exclude,Google API endpoint host
+example.com,flag,IANA reserved documentation domain with a placeholder page

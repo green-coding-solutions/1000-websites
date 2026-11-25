@@ -1,0 +1,162 @@
+# Adult decisions made by hand for tools/build-site-list.py, by page title and domain.
+# Used where the four signals (cf-family, ut1, oisd, rta) disagree, and where a
+# decision overrules them. decision is porn, adult (adult but not porn) or no.
+# Made on 2026-11-25 from the titles check.py fetched on that day.
+domain,decision,reason
+ivi.ru,no,Russian film streaming service
+onlyfans.com,porn,"OnlyFans, counted as porn as in sites_benchmarkable_no_porn.txt"
+pimpbunny.com,porn,porn by its title 'Watch Porn & Chat With Models | PimpBunny'
+xhamster46.desi,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+pixiv.net,no,"art community, its adult works sit behind an opt-in"
+eporner.com,porn,porn by its title 'HD Porn Videos - Full High Definition Movies | EPORNER'
+dmm.co.jp,porn,"FANZA age gate, adult video store"
+xhaccess.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+rule34.xxx,porn,explicit fan art
+dlsite.com,porn,store mostly for adult doujin games and manga (from Germany it redirects to google.com)
+fetlife.com,adult,BDSM and fetish community
+beboo.ru,no,general dating site
+xham.live,porn,porn by its title 'Free Live Adult Webcams | xhamsterlive.com'
+xhamster19.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+noodlemagazine.com,porn,porn video search
+xhspot.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+thisvid.com,porn,"porn by its title 'Public sex, homemade porn, free sex videos, free porn movies at ThisVi'"
+xhsocial.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+xhstream.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+xhopen.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+fapello.com,porn,leaked nude photos
+xhname.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+missav.ws,porn,porn by its title 'MissAV | Sehen Sie HD JAV online | Kostenlose und qualitativ hochwerti'
+rule34video.com,porn,explicit fan videos
+sex-studentki.team,porn,porn by its title 'Главная: Порно студенток и молодых'
+sexvid.xxx,porn,"porn by its title 'SexVid XXX - HD Sex Videos, Porn Tube Movies, Free Porno'"
+fpo.xxx,porn,porn by its title 'Free Porn Videos'
+theblowers.com,adult,gay sex encounter site
+ukdevilz.com,porn,porn tube with a neutral title
+milfporn.tv,porn,porn by its title 'Free MILF Porn Videos and Mom Sex Tube - MILFPorn. TV'
+superporn.com,porn,porn by its title 'SuperPorn - FREE PORN VIDEOS'
+beeg.porn,porn,porn by its title 'Free Porn Tube. Best Porn Videos From Tubes – Beeg.Porn'
+joyclub.de,adult,erotic and swinger community
+rat.xxx,porn,"porn by its title 'Free Porn Videos, HD Sex Movies'"
+simpcity.cr,porn,leak forum for OnlyFans and similar content
+bookmark.xxx,porn,porn by its title 'BookMark XXX'
+jable.tv,porn,porn by its title 'Jable.TV | 免費高清AV在線看 | J片 AV看到飽'
+missav.live,porn,porn by its title 'MissAV | Sehen Sie HD JAV online | Kostenlose und qualitativ hochwerti'
+tokyomotion.net,porn,porn by its title 'Free Porn Videos - TOKYO Motion'
+listcrawler.eu,adult,escort ads
+missav123.com,porn,porn by its title 'MissAV | 免费高清AV在线看'
+xnxx-arabic.com,porn,porn by its title 'أفلام سكس مجانية، قنوات فيديوهات، صور سكس، كس فى أفلام سكس - XNXX.COM'
+missav.ai,porn,porn by its title 'MissAV | Sehen Sie HD JAV online | Kostenlose und qualitativ hochwerti'
+fatalmodel.com,adult,"escort platform, all four signals but not porn"
+pussyspace.com,porn,porn by its title 'Free Pussy Videos | Porn Videos & XXX - PussySpace'
+fastdl.app,no,Instagram downloader
+shahvani.com,porn,"Persian sex forum, the name means lustful"
+luticlip.com,porn,porn by its title 'تماشای فیلم سکسی ایرانی - تماشای فیلم و کلیپ سکسی ایرانی جدید و با کیف'
+ladies.de,adult,sex-work and escort ads
+kingbokep.tv,porn,porn by its title 'KingBokep | Streaming Video Bokep Terbaru'
+xxxvideo.link,porn,porn by its title 'XXX Video and Videos XXX'
+desitales2.com,adult,erotic stories
+redwap.sex,porn,"porn by its title 'Redwap.sex - XXX Video HD, XXX HD Porn Tube, Redwap Porn, Hot HD Video'"
+okxxx1.com,porn,porn by its title 'OK.XXX -🌶️ free porn tube!'
+indiansexstories3.com,adult,erotic stories
+indoav.com,porn,porn by its title 'Video Bokep Indonesia Viral Terbaru | Indo AV'
+colliderporn.com,porn,porn by its title 'Free Porn Videos and HD Sex Tube Movies at Collider Porn'
+njavtv.com,porn,porn by its title 'nJAV | Sehen Sie HD JAV online | Kostenlose und qualitativ hochwertige'
+txnhh.com,porn,"porn by its title 'Free Porn, Sex, Tube Videos, XXX Pics, Pussy in Porno Movies - XNXX.CO'"
+fabswingers.com,adult,swinger site
+wnacg.com,porn,hentai comics
+xvideos-ar.com,porn,porn by its title 'فيديوهات سكس مجانية - XVIDEOS.COM'
+taktube.net,porn,porn by its title 'تماشای آنلاین فیلم‌های سکسی ایرانی با کیفیت بالا - تک تیوب: بزرگترین س'
+kir2kos.net,porn,porn by its title 'سکس ایرانی | پورن ایرانی و سوپر وطنی – کیر تو کس'
+darkero.com,porn,porn videos and leaks
+xxx18hot.com,porn,"porn by its title 'XXX 18 Hot, XXX Teen Porn, 18 Hot Videos'"
+mileroticos.com,adult,"escort ads, all four signals but not porn"
+freepornvideo.sex,porn,"porn by its title 'Sex Videos, XXX Porn Vedio - Free Porn Video'"
+arabxn.sex,porn,porn by its title 'سكس مترجم - سكس عربي - افلام سكس نيك xnxx'
+7hyy.com,no,"title ""Surveza"" and domain show nothing adult"
+sexalarab.com,porn,porn by its title 'سكس العرب - سكس مترجم أفلام سكس نيك جنس اجنبي مترجم عربى - SEX AL ARAB'
+zebawy.com,porn,"Arabic porn site, the title is only its name"
+arabx.cam,porn,porn by its title 'عرب اكس - سكس مترجم وافلام سكس مترجمه احدث فيديوهات السكس المترجم'
+arabtnt.com,porn,porn by its title 'الجنس العربي القذر ، العربية الإباحية موفس ، مجانا XXX أنبوب الإباحية '
+xvv1deos.com,porn,porn by its title 'Free Porn Videos - XVIDEOS.COM'
+sexnyk.com,porn,porn by its title 'سكس نيك عربي Sexnyk مجموعة سكس عربي وافلام نيك مسربة حصرية'
+fabguys.com,adult,gay hookup site
+escort.club,adult,escort directory
+tamilsexzone.com,porn,porn by its title 'Tamil Sex Videos | Daily South Indian videos & HD XXX Clips'
+momon-ga.com,porn,hentai comics
+xxxhindi.to,porn,porn by its title 'XxX Hindi To - हिंदी सेक्स विडियोस | Hindi XXX HD | XXX Hindi Sex Vide'
+annunci69.it,adult,swinger and erotic ads
+bhojpurisex.site,porn,porn by its title 'Bhojpuri sex videos - बिहारी भोजपुरी सेक्सी वीडियो'
+antarvasna3.com,adult,erotic stories
+xn--12c1ezaww.com,porn,porn by its title 'รักหี คลิปหลุด แหล่งรวมxxxสำหรับคนรักหี รักหี.com - รักหี สำหรับคนรักห'
+xn--l3ca4b6dsc1b.com,porn,porn by its title 'เย็ดดิ.com - เว็บรวมคลิปหลุด คลิปโป๊ Thai xxx อัพเดตใหม่ทุกวัน'
+sexmupxinh.net,porn,"porn by its title 'Phim Sex, Xem Phim Sex Nóng Full HD, Sex Nhanh Dâm Nhất'"
+freesexkahani.com,adult,erotic stories
+javwow.com,porn,porn by its title 'AV ซับไทย ดูหนังโป๊ญี่ปุ่น - JAV Subthai หนัง XXX ออนไลน์'
+maynoe.com,porn,"Burmese porn, the title says blue film"
+devil69porn.tv,porn,porn by its title 'คลิปหลุดไทย คลิปหลุดโอนลี่แฟน คลิปหลุด คลิปโป๊ คลิปXXX คลิป18+ หนังโป๊'
+sexvid1.com,porn,"porn by its title 'SexVid XXX - HD Sex Videos, Porn Tube Movies, Free Porno'"
+xn--18-3qi3cza3b2a2dxc4b9a.com,porn,porn by its title 'หนัง18ฟรี หนังโป๊ หนังX คลิปหลุด คลิปโป๊ หี เย็ด XXX PORN เว็บโป๊แนวหน'
+ind.xxx,porn,porn by its title 'XXX Videos - Ind💦XXX'
+isaidub.green,no,"film piracy site by its title, not adult"
+pornoborshch.com,porn,porn by its title 'Найсмачніший Порно Борщ - Кращий український порно сайт з величезною к'
+xn--42cf7cgd7gxbd4m7c.cc,porn,porn by its title 'หนังโป๊คับ หนังโป๊ฟรี หนังโป้ JAV หนังXXX หนังเอวี คลิปหลุด คลิปโป๊ หน'
+hdhub4u.bi,no,"film piracy site by its title, not adult"
+moviezda.net,no,"film piracy site by its title, not adult"
+blacktoon423.com,no,"Korean webtoon link site, not adult"
+filmyfly.army,no,"film piracy site by its title, not adult"
+xhzone.live,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+xhlink.blog,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+f95zone.to,porn,adult games
+mat6tube.com,porn,porn by its title 'Free Porn & XXX Movies Tube'
+mykamababa.com,porn,porn by its title 'KamaBaba - Erotic unseen Indian sex videos'
+desikahani2.net,adult,erotic stories
+botinok.porn,porn,porn by its title 'Приветствую на Сайте Порно Ботинок - Только у нас самое лучшее порно р'
+tamilsexvids.net,porn,porn by its title 'Tamil Sex Videos | Handpicked South-Indian Porn videos'
+bfvideo.site,porn,porn by its title 'BF Video - Indian XXX Blue films -'
+moviessda.com,no,"film piracy site by its title, not adult"
+xhfanclub.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+leakgallery.com,porn,OnlyFans leaks
+grindr.com,no,"homepage of an LGBTQ social networking app, nothing adult on it"
+sex-studentki.vodka,porn,porn by its title 'Главная: Порно студенток и молодых'
+xhfuck.com,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+p4455.com,porn,porn by its title 'Mydesi.net – Free indian Porn Videos'
+sexwabs.com,porn,porn by its title 'سكس وبس - افلام سكس عربي اند اجنبي مترجم'
+kamareels2.com,porn,porn by its title 'Indian sex reels - 3sex.com - Kama Reels'
+xhco.live,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+av19t.com,porn,porn by its title 'AV19 | 야동'
+moviezwap.codes,no,"film piracy site by its title, not adult"
+xhtv.live,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+yasyadong02.tv,porn,"Korean porn (yadong) domain, the title is only a loading page"
+filmyfly.bingo,no,"film piracy site by its title, not adult"
+5movierulz.forex,no,"film piracy site by its title, not adult"
+moviezwap.best,no,"film piracy site by its title, not adult"
+moviezda.com,no,"film piracy site by its title, not adult"
+5movierulz.fitness,no,"film piracy site by its title, not adult"
+5movierulz.solutions,no,"film piracy site by its title, not adult"
+filmyfly.sale,no,"film piracy site by its title, not adult"
+filmyzilla70.com,no,"film piracy site by its title, not adult"
+5movierulz.university,no,"film piracy site by its title, not adult"
+5movierulz.ventures,no,"film piracy site by its title, not adult"
+bollyflix.af,no,"film piracy site by its title, not adult"
+filmyzilla68.com,no,"film piracy site by its title, not adult"
+filmyzilla69.com,no,"film piracy site by its title, not adult"
+mobilexh.live,porn,porn by its title 'Free Porn Videos & XXX Movies - Sex Videos Tube'
+yasyadong03.tv,porn,"Korean porn (yadong) domain, the title is only a loading page"
+yasyadong04.tv,porn,"Korean porn (yadong) domain, the title is only a loading page"
+5movierulz.green,no,"film piracy site by its title, not adult"
+moviezda.me,no,"film piracy site by its title, not adult"
+5movierulz.delivery,no,"film piracy site by its title, not adult"
+moviesda.ski,no,"film piracy site by its title, not adult"
+5movierulz.recipes,no,"film piracy site by its title, not adult"
+filmyfly.church,no,"film piracy site by its title, not adult"
+filmyfly.family,no,"film piracy site by its title, not adult"
+mp4moviez.art,no,"film piracy site by its title, not adult"
+filmyfly.broker,no,"film piracy site by its title, not adult"
+filmyzilla76.com,no,"film piracy site by its title, not adult"
+5movierulz.directory,no,"film piracy site by its title, not adult"
+filmeri.com,no,"film piracy site by its title, not adult"
+5movierulz.works,no,"film piracy site by its title, not adult"
+filmyzilla74.com,no,"film piracy site by its title, not adult"
+5movierulz.academy,no,"film piracy site by its title, not adult"
+filmyfly.care,no,"film piracy site by its title, not adult"
+cosmopolitan.com,no,women's magazine
