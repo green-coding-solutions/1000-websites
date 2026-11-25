@@ -45,6 +45,7 @@ sites take about 71 minutes of flow, which leaves room for slow sites.
 import argparse
 import csv
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -262,9 +263,23 @@ def cmd_submit(args):
 RESULT_NOTE = re.compile(r'^batch-site (\d+) RESULT (\S+) (\S+) ?(.*)$')
 
 
+def gmt_token():
+    """The cluster token, as submit_software.py finds it. Runs of user 8 are
+    not public: without the token /v2/runs leaves them out and /v1/notes
+    answers 403."""
+    token = os.environ.get('GMT_AUTH_TOKEN', '').strip()
+    path = Path.home() / '.gmt' / 'token'
+    if not token and path.exists():
+        token = path.read_text(encoding='utf-8').strip()
+    return token
+
+
 def api_get(path):
     url = f'{args_api}{path}'
-    with urllib.request.urlopen(url, timeout=60) as response:
+    request = urllib.request.Request(url)
+    if token := gmt_token():
+        request.add_header('X-Authentication', token)
+    with urllib.request.urlopen(request, timeout=60) as response:
         body = response.read()
     # GMT answers 204 with an empty body when nothing matches.
     if not body.strip():
