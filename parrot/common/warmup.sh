@@ -56,7 +56,14 @@ WARMUP_SECONDS="${PARROT_WARMUP_SECONDS:-20}"
 log() { printf '[warmup] %s\n' "$*"; }
 
 rm -rf "$PROFILE"
-bash "${HERE}/setup-profile.sh" "$BROWSER" "$PROFILE"
+# With a batch template (common/make-template-profile.sh) the warmup browser
+# gets a copy of it, so it runs the same consent add-on as the measured one and
+# the proxy holds what the page loads after its banner was answered.
+if [[ "$BROWSER" == "firefox" && -f "${PARROT_TEMPLATE_PROFILE:-/tmp/parrot-profile-template}/user.js" ]]; then
+    bash "${HERE}/fresh-profile.sh" "$PROFILE"
+else
+    bash "${HERE}/setup-profile.sh" "$BROWSER" "$PROFILE"
+fi
 
 log "loading ${PARROT_URL} in ${BROWSER} for ${WARMUP_SECONDS}s to fill the proxy cache"
 bash "${HERE}/launch-browser.sh" "$BROWSER" "$PROFILE" "$PARROT_URL" \

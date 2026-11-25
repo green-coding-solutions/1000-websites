@@ -3,7 +3,8 @@
 #
 #   upload-screenshot.sh <png> <driver> <variant> <page> <upload-url>
 #
-# <driver> is parrot or playwright, <variant> xvfb, headful or headless. If
+# <driver> is parrot or playwright. <variant> is xvfb, headful or headless for
+# the single-site scenarios and firefox-com for the batches. If
 # <png>.title exists, its contents go along as the page title for the gallery
 # caption.
 #

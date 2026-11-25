@@ -2,6 +2,10 @@
 # Capture what the measured Chrome is showing, for review.
 #
 #   screenshot.sh <out.png>
+#   PARROT_WINDOW_CLASS=firefox screenshot.sh <out.png>
+#
+# The window class defaults to Chrome's parrot-chrome. The Firefox batch passes
+# firefox, the res_CLASS Firefox 155 maps its window under.
 #
 # Chrome's browser window rather than the page alone: Chrome's own address bar
 # is in it, so a redirect, a bot wall or an error page shows where the browser
@@ -31,7 +35,8 @@ rm -f "$out" "$out.title"
 # largest visible window of Chrome's class. Chrome maps several windows with
 # that class, and pop-ups a page opens are among them.
 window="" area=0
-for id in $(xdotool search --onlyvisible --class parrot-chrome 2>/dev/null); do
+window_class="${PARROT_WINDOW_CLASS:-parrot-chrome}"
+for id in $(xdotool search --onlyvisible --class "$window_class" 2>/dev/null); do
     geometry="$(xdotool getwindowgeometry --shell "$id" 2>/dev/null)" || continue
     width="$(awk -F= '/^WIDTH=/{print $2}' <<<"$geometry")"
     height="$(awk -F= '/^HEIGHT=/{print $2}' <<<"$geometry")"
@@ -41,7 +46,7 @@ for id in $(xdotool search --onlyvisible --class parrot-chrome 2>/dev/null); do
     fi
 done
 if [[ -z "$window" ]]; then
-    log "WARNING: no visible Chrome window on $DISPLAY, nothing to capture"
+    log "WARNING: no visible browser window of class ${window_class} on $DISPLAY, nothing to capture"
     exit 0
 fi
 
@@ -66,5 +71,6 @@ fi
 # The browser window is titled "<page title> - Google Chrome for Testing".
 title="$(xdotool getwindowname "$window" 2>/dev/null || true)"
 title="${title% - Google Chrome for Testing}"
+title="${title% — Mozilla Firefox}"
 printf '%s' "$title" > "$out.title"
 log "captured window $window on $DISPLAY from the $source, $(stat -c %s "$out") bytes, title: ${title:-none}"

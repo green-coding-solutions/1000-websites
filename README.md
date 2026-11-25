@@ -8,9 +8,9 @@ other:
 
 | | `playwright/usage_scenario.yml` | `parrot/usage_scenario.yml` |
 | --- | --- | --- |
-| Browser | Chromium (Playwright's bundled build) | Google Chrome for Testing 152.0.7977.82 |
+| Browser | Playwright's chrome-headless-shell 153.0.8010.12 | Google Chrome for Testing 152.0.7977.82 |
 | Driven by | Playwright, over the Chrome DevTools Protocol | [Parrot](https://github.com/green-coding-solutions/parrot), replaying real X11 input |
-| Window | headful, in the container's own Xvfb | headful, in the container's own Xvfb + fluxbox |
+| Window | none: headless | headful, in the container's own Xvfb + fluxbox |
 | Based on | GMT's `templates/website/usage_scenario_cached.yml` (the webnrg benchmark) | Parrot's `websites/usage_scenario_chrome_cached.yml` |
 
 The reason both exist is to find out how much of a website energy measurement is
@@ -62,19 +62,21 @@ what decides how much work the page actually does:
 * **The layout viewport is `1432x809` in both.** Parrot's Chrome window is
   pinned by fluxbox to 1440x900 with no decorations; 91 px go to the tab strip
   and toolbar, and 8 px to the vertical scrollbar. Playwright is set to that
-  measured number rather than to a round one. It is not 1440 because an
-  emulated Playwright viewport gets overlay scrollbars that take no layout
-  width, so asking for 1440 would hand the page 8 px more than Parrot does.
+  measured number rather than to a round one. It is not 1440 because
+  Playwright's scrollbars take no layout width (headless Chromium runs with
+  `--hide-scrollbars`), so asking for 1440 would hand the page 8 px more than
+  Parrot does. Headless, the page reports 1432x809 at `devicePixelRatio` 1.
 * **One scroll tick moves the document 120 px in both**, for 3000 px over the
   5 s phase. One X button-5 tick was measured to scroll Chrome exactly 120 px,
   so the Playwright side dispatches `wheel(0, 120)` rather than the GMT
   template's 200, which would have scrolled 5000 px against Parrot's 3000.
 * **Both use the same squid proxy image and the same 20 s warmup**, so both
   measured loads start with a warm proxy cache and a cold browser cache.
-* **Both are headful**, with the browser rendering into an Xvfb inside its own
-  container. Neither depends on an X server on the host, so neither is tied to
-  a particular measurement machine by its display setup.
-* **Both launch Chrome with the same switches.** `parrot/common/launch-browser.sh`
+* **Neither depends on an X server on the host.** Parrot's Chrome renders into
+  an Xvfb inside its own container and Playwright's is headless, so neither is
+  tied to a particular measurement machine by its display setup.
+* **Both launch Chrome with the same switches**, except for the four headless
+  ones below. `parrot/common/launch-browser.sh`
   passes every switch Playwright 1.62.1 gives Chromium, as read from
   `/proc/<pid>/cmdline` of the browser Playwright actually launched rather than
   from documentation, and checked the same way on Parrot's Chrome. Parrot leaves
@@ -105,14 +107,26 @@ what decides how much work the page actually does:
 Worth knowing before reading any delta between the two as a property of a
 website:
 
-* **The Chrome versions differ by one.** Both are Chrome for Testing:
-  Playwright 1.62.1 bundles 151.0.7922.34, Parrot's image pins 152.0.7977.82.
+* **Playwright's browser is headless, Parrot's is not.** Headless, GMT's
+  launcher starts Playwright's chrome-headless-shell, a separate build without
+  browser UI, not Chromium itself, and passes `--headless`,
+  `--hide-scrollbars`, `--mute-audio` and a `--blink-settings` that makes pages
+  see a mouse (hover and a fine pointer). None of these is in Parrot's list. So
+  a delta between the two also holds what a headful browser does that a
+  headless one does not, such as drawing its window and toolbar. Full Chromium
+  in headless mode would need GMT's launcher to pass `channel: 'chromium'`,
+  which it does not. Read from `/proc/<pid>/cmdline` and from a page in the
+  `playwright:v1.63.0-noble` image on 2026-09-24.
+* **The Chrome versions differ.** Playwright 1.63.0's chrome-headless-shell is
+  153.0.8010.12, Parrot's image pins Chrome for Testing 152.0.7977.82.
 * **Playwright's Chrome tells pages it is automated, Parrot's does not.**
   Chromium sets `navigator.webdriver` to `true` whenever it runs with
   `--remote-debugging-pipe`, and Playwright cannot run without that switch.
   Read from a page in each container: `true` under Playwright, `false` under
-  Parrot. A site with bot detection can serve the two scenarios different
-  content; `bot-detection/` lists sites known to.
+  Parrot. Headless adds a louder tell: Playwright's user agent says
+  `HeadlessChrome/153`, which bot managers check for. A site with bot detection
+  can serve the two scenarios different content; `bot-detection/` lists sites
+  known to, and `bot-wall-check/` only tested what Parrot's curl gets.
 * **The reachability check sits in different places.** Playwright checks the
   HTTP status of the very navigation it measured, afterwards. Parrot cannot do
   that, so it fetches the page through the proxy with `curl` first, in a hidden
@@ -156,9 +170,10 @@ Each scenario has a headful twin that draws on the machine's own X server
 instead of an Xvfb inside the container: `parrot/usage_scenario_headful.yml`
 and `playwright/usage_scenario_headful.yml`. The flow, the phase names and
 deadlines, the squid cache and the `website_load` metric are the ones above, so
-the two twins compare against each other the way the Xvfb pair does. Against
-the Xvfb pair, a delta also contains whatever the host's X server, compositor
-and display do with the frames Chrome sends them.
+the two twins compare against each other the way the default pair does, and
+both are headful. Against the default pair, a delta also contains whatever the
+host's X server, compositor and display do with the frames Chrome sends them,
+and on the Playwright side the difference between headful and headless.
 
 Both mount `/tmp/.X11-unix`, set `DISPLAY=:0` and connect as root without a
 cookie, so the host has to let them in:
@@ -172,6 +187,20 @@ Without an X server on `:0` that accepts them, the Parrot one fails in BOOT with
 its browser. Machine 15 ran Parrot's xpdf host-display scenario successfully on
 2026-06-04 and failed that way on 2026-06-18 and 2026-08-19, so check its
 display before submitting there.
+
+**Do not use machine 12 for them.** Its `:0` is GNOME Shell on Wayland, with
+GNOME's rootless Xwayland 23.2.6, and both twins run there without error, but
+neither browser ever puts a frame on the display. Checked on 2026-09-24 over
+ssh, with Parrot's Chrome and with Playwright's Chromium from its own image:
+the Chrome window reads back all black while a plain X window reads back
+fine, and Chrome's display process logs `xcb_connect() failed, error 1` and
+`x11_software_bitmap_presenter.cc:147 XGetWindowAttributes failed`.
+`--ipc=host` does not help, and `--in-process-gpu` silences the errors but the
+window stays black. A headful run on machine 12 therefore measures a browser
+that renders pages and never displays them, and Playwright's screenshots do
+not show it, because `page.screenshot` comes from inside the browser. A real
+Xorg session on the host, GDM with `WaylandEnable=false`, is the setup to try
+next.
 
 What had to change beyond pointing at `:0`:
 
@@ -293,10 +322,12 @@ them in one gallery, one row per site, with both drivers side by side.
   measured it, and none of its work is in a measured phase. In Playwright it
   comes before the status check, so a page that fails that check still leaves
   a screenshot.
-* **What:** Parrot grabs the whole X screen with `import`, so Chrome's address
-  bar shows where the browser really ended up after redirects. Playwright uses
-  `page.screenshot`, which is the 1432x809 viewport without browser UI. Both send
-  the page title along.
+* **What:** Parrot grabs Chrome's 1440x900 window with `import`, tab strip and
+  address bar included, so the address bar shows where the browser really ended
+  up after redirects. It takes the window and not the whole screen because the
+  X server of a Wayland desktop, which machine 12 runs on `:0`, refuses to hand
+  a client the whole screen. Playwright uses `page.screenshot`, which is the
+  1432x809 viewport without browser UI. Both send the page title along.
 * **Never fails the run.** A capture or upload problem is a `[screenshot]
   WARNING` line in the run's log, and the run goes on. A review server that is
   down must not cost a cluster run.
@@ -321,18 +352,133 @@ tools/submit.py --url-file sites.txt --screenshot-url https://shots.example.org/
 How to run the server, with docker compose behind an HTTPS proxy, is in
 `screenshot-server/README.md`.
 
+## Batch runs: many sites per GMT run, in Firefox
+
+The single-site scenarios above spend most of a run on GMT itself. On machine
+15 in October 2026 a run took about 5.5 minutes for 40 s of measured phases:
+60 s baseline, 44 s installation, 18 s boot, 60 s idle, 80 s of flow and the
+cluster's cooldown. 208 sites in both scenarios took a month of queue.
+
+A batch run measures up to 50 sites one after the other in one GMT run, so
+the baseline, installation, boot and idle are paid once per batch. Per site it
+runs about 73 s locally (85 s with the cluster's 1 s between phases): a fresh
+profile and the 20 s cache warmup, starting Firefox, the measured 33 s visit
+and 7 s scroll, a screenshot and quitting Firefox. 1000 sites are 20 runs of
+about 75 minutes each, roughly a day on one machine.
+
+```bash
+# write parrot/batches/tranco1000-01.yml ... -20.yml from the list
+tools/batch.py generate sites_tranco_top1000.txt --name tranco1000
+
+# commit and push them, then submit to machine 15
+tools/batch.py submit parrot/batches/tranco1000-*.yml \
+  --screenshot-url https://shots.example.org/upload
+
+# a local check with three sites, then run it like any scenario
+tools/batch.py generate sites.txt --name smoke --limit 3
+```
+
+The generated files are ordinary usage scenarios and are committed, because the
+cluster clones the repository. Regenerate them, do not edit them.
+
+### What is measured
+
+Firefox 155.0.1 from `ribalba/parrot-browsers:v1`, driven by Parrot in the
+container's Xvfb, through the same squid cache as the other scenarios, with
+the window pinned to 1440x900. The measured phases per site are
+`NNNN <host> visit` (Alt+Home to the site, idle to 33 s) and
+`NNNN <host> scroll` (25 wheel ticks, idle to 7 s), the same flow and the same
+`common/phase-clock.sh` deadlines as the Chrome scenarios. `NNNN` is the site's
+position in the list. Everything else is in hidden phases, see
+`parrot/common/batch-site.sh`.
+
+Firefox runs with the **Consent-O-Matic** add-on (CAVI, Aarhus University,
+version 1.1.5 from addons.mozilla.org, pinned by checksum in
+`parrot/firefox/`). It answers consent banners of the CMPs it has rules for
+with "reject all", so a site is measured in the state a user who refuses
+tracking gets. Firefox's own cookie banner handling, which was the first
+choice, does not exist any more: Mozilla removed it (bug 2058143), and the
+Firefox 155.0.1 in the image has neither its prefs nor its rules list. The
+add-on's rules come from the master branch of its GitHub repository, which was
+at commit 8ca8500d26 (2025-11-07) on 2026-11-25. Each run logs the commit it
+got. Banners it has no rule for stay, and so do pay-or-consent walls such as
+spiegel.de's, which offer no reject button.
+
+Every site starts from a copy of one template profile per run.
+`parrot/common/make-template-profile.sh` builds it once: it starts Firefox on
+example.com, so that the add-on downloads its rules and opens its first-run
+tab, quits Firefox and deletes everything example.com left. Without that, the
+add-on would open a tab over the page and download about 200 rule files inside
+the first measured phase of every site. The copy has no cookies, no site
+storage and an empty HTTP cache, so each measured visit still starts cold.
+
+Two more things were switched off because they were seen on screen or in the
+profile while testing on 2026-11-25. Firefox 155 ignores the update prefs and
+put an "Update available" panel over the page, so
+`parrot/common/firefox-policies.sh` writes `DisableAppUpdate` and related
+enterprise policies into the image's Firefox at container start. And the
+translations panel opened over every German page, and the new tab page fetched
+weather, sponsored tiles and news, which `setup-profile.sh` now turns off by
+pref.
+
+### A failing site does not fail the batch
+
+Every per-site step exits 0. What happened is a GMT note instead, and every
+site ends with exactly one of
+
+```
+batch-site <n> RESULT ok <url>
+batch-site <n> RESULT failed:<stage> <url> <reason>
+```
+
+Only sites with `ok` have measured phases worth reading. A site whose browser
+never came up still runs its two measured phases, idling to the deadlines, so
+the sites after it keep their timing, and its numbers are an idle machine.
+Only the template step can fail the run, because without it no site can be
+measured.
+
+### Before a batch: the banner pre-scan
+
+`banner-scan/` loads every site of a list in the same Firefox, once plain and
+once with Consent-O-Matic, and reports which sites still show a banner with the
+add-on. Those are the ones to fix before spending cluster time. See
+`banner-scan/README.md`.
+
+### After a batch: review and remeasure
+
+Each site uploads its screenshot with driver `parrot` and variant
+`firefox-com` to `screenshot-server/`. Tag each site there as ok, cookie
+banner, bot wall, error page, blank or other, then export the tagged URLs as a
+list and feed it to `tools/batch.py generate` for a remeasurement. See
+`screenshot-server/README.md`.
+
+### The site list
+
+`sites_tranco_top1000.txt` is the 1000 most popular sites in Tranco list JZW4Y
+(2026-11-24) whose homepage is in the Chrome UX Report (2026-10), that passed
+the bot-wall check and are not adult sites. Its header has the rule, the counts
+and the command that rebuilds it. `sites_tranco_candidates.csv` records the
+decision for every candidate, and the sites after the 1000th are the reserve.
+`tools/build-site-list.py` builds both.
+
 ## Layout
 
 ```
-playwright/usage_scenario.yml   the webnrg benchmark, headful Chromium
-parrot/usage_scenario.yml       the same flow in a real Chrome
+playwright/usage_scenario.yml   the webnrg benchmark, headless Chromium
+parrot/usage_scenario.yml       the same flow in a real Chrome, in an Xvfb
 playwright/usage_scenario_headful.yml
 parrot/usage_scenario_headful.yml
-                                both of the above on the host's X display (:0)
-                                instead of an Xvfb in the container
+                                both of the above headful on the host's X
+                                display (:0); not on machine 12, see above
 parrot/chrome/*.parrot          the three input macros: start, visit, scroll
+parrot/firefox/*.parrot         the same three for Firefox, used by the batches
+parrot/firefox/consent-o-matic-1.1.5.xpi
+                                the pinned consent add-on for the batches
+parrot/batches/*.yml            generated batch scenarios, see tools/batch.py
 parrot/common/*.sh              profile setup, proxy CA import, window pinning,
-                                warmup, reachability check, review screenshot
+                                warmup, reachability check, review screenshot,
+                                and for the batches: Firefox policies, the
+                                template profile, per-site steps
 parrot/squid-ca.crt             the proxy's signing CA, imported into the
                                 browser's NSS store so the MITM cache works
 common/phase-clock.sh           the fixed 33 s and 7 s deadlines both
@@ -341,11 +487,14 @@ common/upload-screenshot.sh     uploads the review screenshot, for both drivers
 screenshot-server/              receives the review screenshots and shows them
                                 in one gallery
 tools/submit.py                 cluster submission for one URL or a list
+tools/batch.py                  generate and submit batch runs
+tools/build-site-list.py        builds sites_tranco_top1000.txt
+banner-scan/                    cookie banner pre-scan in the batch's Firefox
 ```
 
 `playwright/usage_scenario.yml` pulls its containers from GMT itself via
 `!include-gmt-helper gmt-playwright-with-cache.yml`, and overrides that
-partial's `flow-prepend` to start headful Chromium instead of headless Firefox.
+partial's `flow-prepend` to start headless Chromium instead of headless Firefox.
 
 `parrot/usage_scenario.yml` uses the prebuilt image `ribalba/parrot-browsers:v1`.
 This repository consumes that image, it does not build it: the Dockerfile, the

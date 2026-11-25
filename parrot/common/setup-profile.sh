@@ -94,10 +94,15 @@ firefox)
     # DNS-over-HTTPS is switched off (trr.mode 5) because a proxied browser does
     # not resolve names itself - squid does - and leaving DoH on adds a second,
     # unproxied network path that only sometimes runs.
-    python3 - "$PROFILE/user.js" "$PARROT_URL" "$PROXY_HOST" "$PROXY_PORT" <<'PY'
+    #
+    # PARROT_CONSENT=consent-o-matic additionally installs the Consent-O-Matic
+    # add-on from parrot/firefox/ into the profile, see the block after the
+    # prefs. Unset or "none", the profile has no add-on.
+    consent="${PARROT_CONSENT:-none}"
+    python3 - "$PROFILE/user.js" "$PARROT_URL" "$PROXY_HOST" "$PROXY_PORT" "$consent" <<'PY'
 import json, sys
 
-path, url, proxy_host, proxy_port = sys.argv[1:5]
+path, url, proxy_host, proxy_port, consent = sys.argv[1:6]
 
 prefs = [
     # 1. the scenario itself
@@ -162,7 +167,50 @@ prefs = [
     ("browser.sessionstore.resume_from_crash",          False),
     ("browser.tabs.warnOnClose",                        False),
     ("browser.warnOnQuit",                              False),
+
+    # 3. Firefox 155 features seen on screen or in the profile on 2026-11-25,
+    # with the prefs above already set. The translations panel opened over
+    # every German page, the new tab page fetched weather, sponsored tiles, a
+    # picture of the day and games from Mozilla's servers, and the OpenH264
+    # plugin was downloaded. Each of these is traffic or UI that no page asked
+    # for. App updates and studies are switched off by policy instead, see
+    # common/firefox-policies.sh, because 155 ignores the old update prefs.
+    ("browser.translations.enable",                     False),
+    ("browser.translations.automaticallyPopup",         False),
+    ("browser.newtabpage.enabled",                      False),
+    ("browser.newtabpage.activity-stream.feeds.topsites", False),
+    ("browser.newtabpage.activity-stream.feeds.section.topstories", False),
+    ("browser.newtabpage.activity-stream.feeds.system.topstories", False),
+    ("browser.newtabpage.activity-stream.feeds.weatherfeed", False),
+    ("browser.newtabpage.activity-stream.showSponsored", False),
+    ("browser.newtabpage.activity-stream.showSponsoredTopSites", False),
+    ("browser.newtabpage.activity-stream.showWeather",  False),
+    ("browser.topsites.contile.enabled",                False),
+    ("media.gmp-manager.updateEnabled",                 False),
+    ("app.normandy.enabled",                            False),
+    ("app.shield.optoutstudies.enabled",                False),
+    ("messaging-system.rsexperimentloader.enabled",     False),
+    ("extensions.systemAddon.update.enabled",           False),
+    ("browser.ml.enable",                               False),
+    # A page that touches the speech API gets a "Speech Dispatcher library is
+    # missing" bar over its top, 57 px of viewport, because the image has no
+    # speech-dispatcher. Seen by banner-scan/ on nytimes.com, ebay.de and
+    # others. Firefox 155's SpeechDispatcherParent.sys.mjs checks this pref.
+    ("media.webspeech.synth.dont_notify_on_error",      True),
 ]
+
+# Add-ons dropped into <profile>/extensions/ are in the profile scope, which
+# Firefox installs but leaves disabled until the user confirms. Scope 0 in
+# autoDisableScopes enables them without asking. The add-on keeps its MV3 host
+# permission <all_urls>: checked in extension-preferences.json of a profile
+# built this way.
+if consent == "consent-o-matic":
+    prefs += [
+        ("extensions.autoDisableScopes",                0),
+        ("extensions.enabledScopes",                    15),
+    ]
+elif consent != "none":
+    sys.exit(f"[setup-profile] unknown PARROT_CONSENT={consent!r} (expected none or consent-o-matic)")
 
 with open(path, "w", encoding="utf-8") as fh:
     fh.write("// Written by websites/common/setup-profile.sh. Do not edit by hand.\n")
@@ -170,6 +218,27 @@ with open(path, "w", encoding="utf-8") as fh:
         fh.write(f"user_pref({json.dumps(name)}, {json.dumps(value)});\n")
 PY
     log "wrote $PROFILE/user.js (homepage ${PARROT_URL}, proxy ${PROXY_HOST}:${PROXY_PORT})"
+
+    # Consent-O-Matic 1.1.5 (CAVI, Aarhus University, MIT licence), the signed
+    # build from addons.mozilla.org, pinned by checksum. The file name has to
+    # be the add-on's id for Firefox to pick it up from the profile.
+    #
+    # A profile built here is not ready to measure with yet: on its first start
+    # the add-on opens its options page in a new tab and downloads its rules
+    # from GitHub. common/make-template-profile.sh does that first start once,
+    # and common/fresh-profile.sh copies the result for every site.
+    if [[ "$consent" == "consent-o-matic" ]]; then
+        xpi="${PARROT_COM_XPI:-/tmp/repo/parrot/firefox/consent-o-matic-1.1.5.xpi}"
+        want='a2119abc329638d6e7af1ab4e5548a348465e02eec11de08dee0af84919923dc'
+        have="$(sha256sum "$xpi" | cut -d' ' -f1)"
+        if [[ "$have" != "$want" ]]; then
+            echo "[setup-profile] FATAL: $xpi has sha256 $have, expected $want" >&2
+            exit 1
+        fi
+        mkdir -p "$PROFILE/extensions"
+        cp "$xpi" "$PROFILE/extensions/gdpr@cavi.au.dk.xpi"
+        log "installed Consent-O-Matic 1.1.5 into $PROFILE/extensions"
+    fi
     ;;
 
 chrome)
