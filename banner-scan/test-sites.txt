@@ -1,0 +1,24 @@
+# Validation list for banner-scan/scan.py. Each line says what was expected
+# before the first run, as "plain / com".
+https://www.ikea.com/de/de/      # OneTrust. banner / none
+https://www.spiegel.de/          # Sourcepoint pay-or-consent wall. banner / banner
+https://www.reddit.com/          # own banner. banner / banner
+https://www.wikipedia.org/       # none / none
+https://www.tagesschau.de/
+https://www.bbc.co.uk/
+https://www.zeit.de/             # redirects to its own consent page
+https://www.lemonde.fr/
+https://www.corriere.it/
+https://www.amazon.de/
+https://www.google.com/
+https://www.youtube.com/
+https://github.com/
+https://www.booking.com/
+https://www.nytimes.com/
+https://www.bild.de/
+https://www.welt.de/
+https://www.ebay.de/
+https://www.chefkoch.de/
+https://www.stackoverflow.com/
+https://www.t-online.de/
+https://www.gmx.net/
