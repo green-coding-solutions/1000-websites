@@ -118,7 +118,14 @@ def make_profile(variant, profile, url):
     shutil.rmtree(profile, ignore_errors=True)
     if variant == 'plain':
         run_quiet(['bash', os.path.join(COMMON, 'setup-profile.sh'), 'firefox', profile], env)
+    elif variant == 'idcac':
+        # IDCAC needs no template: its rules are inside the add-on and it opens
+        # no tab on its first start.
+        env['PARROT_CONSENT'] = 'idcac'
+        run_quiet(['bash', os.path.join(COMMON, 'setup-profile.sh'), 'firefox', profile], env)
     else:
+        # com rejects, com-accept allows every purpose, same template and rules.
+        env['PARROT_COM_CONSENT'] = 'accept' if variant == 'com-accept' else 'reject'
         run_quiet(['bash', os.path.join(COMMON, 'fresh-profile.sh'), profile], env)
     with open(os.path.join(profile, 'user.js'), 'a', encoding='utf-8') as f:
         f.write('// banner-scan/worker.py: keep the benchmark prefs, not Marionette\'s test prefs\n')
@@ -235,7 +242,7 @@ def visit(url, variant, settle, load_timeout, deadline):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--url', required=True)
-    p.add_argument('--variant', choices=('plain', 'com'), required=True)
+    p.add_argument('--variant', choices=('plain', 'com', 'com-accept', 'idcac'), required=True)
     p.add_argument('--settle', type=float, default=12, help='seconds to wait after the load event')
     p.add_argument('--load-timeout', type=float, default=30, help='page load timeout in seconds')
     p.add_argument('--budget', type=float, default=120, help='hard limit for the whole visit')

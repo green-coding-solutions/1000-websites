@@ -53,8 +53,10 @@ CA_FILE = '/tmp/repo/parrot/squid-ca.crt'
 PROXY = 'http://squid:3128'
 WORKER = '/tmp/repo/banner-scan/worker.py'
 
-VARIANTS = ('plain', 'com')
-VARIANT_NAMES = {'plain': 'plain Firefox', 'com': 'with Consent-O-Matic'}
+VARIANTS = ('plain', 'com', 'com-accept', 'idcac')
+VARIANT_NAMES = {'plain': 'plain Firefox', 'com': 'with Consent-O-Matic',
+                 'com-accept': 'with Consent-O-Matic set to accept',
+                 'idcac': "with I still don't care about cookies"}
 
 # Contact sheet sections, in the order they appear.
 GROUPS_BOTH = [
@@ -273,16 +275,19 @@ def csv_row(site, variants):
 
 def write_results(out, sites, variants, meta):
     done = sorted((s for s in sites if s.get('group')), key=lambda s: s['position'])
-    with (out / 'scan.csv').open('w', newline='', encoding='utf-8') as f:
+    # errors='replace': page text can hold a lone UTF-16 surrogate, half of an
+    # emoji that the page cut in two, which UTF-8 cannot encode. One such page
+    # crashed the 577-site run on 2026-11-25 after scan.csv was written.
+    with (out / 'scan.csv').open('w', newline='', encoding='utf-8', errors='replace') as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields(variants))
         writer.writeheader()
         for site in done:
             writer.writerow(csv_row(site, variants))
-    with (out / 'detect.jsonl').open('w', encoding='utf-8') as f:
+    with (out / 'detect.jsonl').open('w', encoding='utf-8', errors='replace') as f:
         for site in done:
             f.write(json.dumps({'position': site['position'], 'url': site['url'], 'group': site['group'],
                                 'results': site['results']}, ensure_ascii=False) + '\n')
-    (out / 'index.html').write_text(render_html(done, variants, meta), encoding='utf-8')
+    (out / 'index.html').write_text(render_html(done, variants, meta), encoding='utf-8', errors='replace')
 
 
 CSS = '''
@@ -488,7 +493,11 @@ def main():
 
     variants = [v.strip() for v in args.variants.split(',') if v.strip()]
     if not variants or any(v not in VARIANTS for v in variants) or len(set(variants)) != len(variants):
-        sys.exit(f'--variants takes plain, com or both, not {args.variants!r}')
+        sys.exit(f'--variants takes plain, com, idcac or plain,com, not {args.variants!r}')
+    # The two-browser contact sheet compares plain against Consent-O-Matic.
+    # Any other variant runs alone.
+    if len(variants) > 1 and set(variants) != {'plain', 'com'}:
+        sys.exit('only plain,com can run together, run other variants on their own')
     variants = [v for v in VARIANTS if v in variants]
     if not shutil.which('docker'):
         sys.exit('docker is not on PATH')
@@ -523,7 +532,7 @@ def main():
         fleet.start()
         fleet.wait_for_squid()
         ready = list(fleet.workers)
-        if 'com' in variants:
+        if any(v in ('com', 'com-accept') for v in variants):
             print('building the Consent-O-Matic template in every worker (about 25 s)', file=sys.stderr)
             results = {}
 

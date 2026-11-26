@@ -221,7 +221,14 @@ speech API, which some fingerprinting scripts do. It takes 57 px of the
 viewport. In the validation run it appeared on nytimes.com, ebay.de and some
 add-on visits (bbc.co.uk, chefkoch.de, stackoverflow.com). The `viewport` column
 shows it as 1438x731 instead of 1438x788. The measured browser gets it too, so
-it is worth switching off in `parrot/common/setup-profile.sh`.
+`parrot/common/setup-profile.sh` switches it off by pref.
+
+The full click finder run on the 1000 sites found a second one. Sites that ask
+for DRM (Spotify, Prime Video, SoundCloud, CNN, Cisco and others) got a "You
+must enable DRM" bar, because the image never downloads Widevine. find-clicks.py
+reported these as GEOMETRY MISMATCH with the page at 0,142. `setup-profile.sh`
+sets `browser.eme.ui.enabled` to false and the rerun of those sites had the page
+at 0,85 again.
 
 ## Runtime
 
@@ -233,3 +240,258 @@ under a second for detection and screenshot. Building the template takes about
 3m 00s, so the CrUX top 1000 takes about 2.3 h. Every worker runs one
 Firefox, so `--jobs` is bounded by memory more than by cores. The screenshots
 take about 320 kB each, so about 650 MB for 1000 sites.
+
+## Click finder
+
+`find-clicks.py` finds, for every site with a consent banner, the screen
+coordinates of the "accept" and the "reject" buttons, and proves them with real
+X11 clicks. The coordinates are meant to be replayed by Parrot (xdotool, XTest)
+inside the measured runs, so they are screen pixels of the benchmark's 1440x900
+Xvfb with Firefox pinned to 0,0 at 1440x900 without decorations. They are only
+valid for exactly that geometry.
+
+```bash
+# a whole list, same format as scan.py
+banner-scan/find-clicks.py sites.txt
+
+# the first 50, with 6 browsers in parallel
+banner-scan/find-clicks.py sites_tranco_top1000.txt --limit 50 --jobs 6
+
+# a few sites
+banner-scan/find-clicks.py --sites https://www.spiegel.de/,www.ikea.com/de/de/
+```
+
+Results go to `banner-scan/results/clicks-<list>-<UTC>/`:
+
+| File | |
+| --- | --- |
+| `clicks.csv` | One row per site, the columns below. The batch generator reads this file |
+| `clicks.jsonl` | Everything `clicks.py` saw: all candidates with labels and coordinates, the detector's verdicts, the geometry of every look, timings |
+| `index.html` | One card per site with a consent UI: before (visit A), after accept, before (visit B), after reject, the labels clicked and the classification. The sites without a consent UI are listed at the end |
+| `shots/` | `<position>-<host>-banner.png`, `-accept.png`, `-banner-b.png` and `-reject.png`, each the whole X screen (`import -window root`), plus the two screenshots of the geometry check |
+| `geometry.json` | The result of the geometry check |
+
+### clicks.csv
+
+| Column | |
+| --- | --- |
+| `position`, `url` | As in the list |
+| `final_url`, `title` | Of visit A when the banner was seen |
+| `banner` | `yes` (detect.js said `banner`), `unsure` or `no`. A visit that failed before the page was looked at is `unsure` with the error in `evidence` |
+| `banner_appears_s` | Seconds from the start of the navigation to the first `banner` verdict, polled about once a second |
+| `blocking` | `yes` when the scroll is locked or the consent UI (with its backdrop) covers 30 % or more of the viewport |
+| `cmps` | CMPs whose globals or markup detect.js found |
+| `accept`, `reject` | `verified`, `failed`, `not-found`, or `n/a` when there is no consent UI |
+| `accept_clicks`, `reject_clicks` | Screen coordinates `x,y`, several clicks joined with `;` in order. Filled for failed paths too, so only replay them when the status is `verified` |
+| `accept_labels`, `reject_labels` | The button texts, joined with ` \| ` |
+| `reject_steps` | Number of clicks of the verified reject path |
+| `no_reject` | Empty when the reject path is verified. Otherwise `pay-or-consent` (a subscription or ad-free offer sits in the consent UI next to accept), `consent-wall` (no way to reject, the banner blocks the page and cannot be closed), `ignorable` (no way to reject, but the banner does not block the page, or its close button removes it) or `not-found` (no consent buttons found) |
+| `subscribe_offer` | `yes` when a subscribe button or a price per month sits in the consent UI next to an accept button |
+| `inner_screen`, `viewport` | `window.mozInnerScreenX,Y` and `innerWidth,innerHeight` as measured. `0,85` and `1440,815` in Firefox 155 |
+| `evidence` | Why, joined with ` \| `. A geometry that differs from the geometry check starts with `GEOMETRY MISMATCH` |
+| `shot_banner`, `shot_accept`, `shot_reject` | Screenshot paths relative to the result directory |
+
+### How it runs
+
+The fleet is like `scan.py`'s, with its own container names
+(`click-finder-<pid>-*`), but every worker boots like the measured container:
+`firefox-policies.sh`, then `pin-windows.sh Navigator 1440 900`, then the
+image's entrypoint, with `SCREEN_SIZE=1440x900x24`, `RESOLUTION=1440x900`,
+`WINDOW_X/Y/WIDTH/HEIGHT`, `LANG=C.UTF-8` and `--shm-size=2g`. The order
+matters, because fluxbox reads its apps file once when it starts. Firefox
+starts through `launch-browser.sh` with a plain profile from
+`setup-profile.sh` (PARROT_CONSENT unset) plus the Marionette prefs of
+`worker.py`. After the window maps, `position-window.sh` runs with the measured
+run's environment, as `replay.py` does, and a click at 720,500 puts the focus
+in the content area, as `start.parrot` does. Nothing calls
+`WebDriver:SetWindowRect`.
+
+Each site gets up to two visits in fresh profiles, run by `clicks.py` through
+`docker exec`:
+
+1. **Visit A.** Navigate with the normal load strategy and a 30 s timeout. The
+   navigation is sent without waiting, and `detect.js` is polled about once a
+   second for 15 s from its start. A page that is still loading and blank at
+   15 s gets until 30 s. When the verdict is `banner`, wait 1.5 s more and
+   take the "before" screenshot. Then `buttons.js` finds the candidates and the
+   best accept button is clicked with `xdotool mousemove`, a 0.15 s pause and
+   `click 1`. Before each click the button is located again until it stops
+   moving, because banners slide in.
+2. **Visit B.** The same page in a new profile, and a reject path of at most
+   three clicks: a first-layer reject, or settings and then reject or save
+   (toggles left as they are, and the evidence says how many were on before
+   save), or settings and one more step. When a reject leaves the UI open, a
+   save comes next. When visit B finds no consent button at all, it is tried
+   once more, because some sites show their banner only on some visits.
+3. **No reject path.** The site is classified as described for `no_reject`.
+   For a blocking banner without a reject path, its close button is tried in
+   visit B, and only the evidence gets its coordinates.
+
+A click counts as **verified** when, 3 s later (2 s after a settings click),
+no accept, reject or save button is left on top anywhere and either the
+detector no longer says `banner` or the container that held the button is
+gone. A floating "privacy settings" button that many CMPs leave behind does not
+count. When the UI that held the button is gone and another consent UI
+appears, the path goes on if the new UI has a button of the same kind
+(bbc.co.uk's own "Yes, I agree" bar after accepting in Sourcepoint), and is
+otherwise done with a note. A click that opens a new window or leaves the site
+(another registrable domain) fails the path.
+
+Two more rules came from the first checks of the validation run:
+
+* **The UI that stays must not block the page.** If the other consent UI locks
+  the scroll or covers 30 % of the viewport or more, the path is not done.
+  t-online.de's "individuell anpassen, Alle Zustimmungen widerrufen" left its
+  pay-or-consent wall up, which earlier counted as a verified reject.
+* **A verified path is looked at again 8 s later** (`HOLD_CHECK`). A new
+  consent UI or wall that was not there right after the click fails the path.
+  corriere.it took "preferenze, Deny All, Save" and put its "Accetta e
+  continua" wall back a few seconds later. The measured visit idles about 20 s
+  after its clicks, so a wall that comes back would be in the measurement.
+
+### How buttons.js finds the buttons
+
+`buttons.js` runs in the top document and, through `WebDriver:SwitchToFrame`,
+in every visible iframe on top that is at least 0.5 % of the viewport and
+either looks like a consent frame (src, id or title) or sits in a consent
+container or is 3 % or larger. Frames inside frames are searched one more
+level. Consent UIs of Sourcepoint, TrustArc and others live in such frames.
+
+1. **Consent containers.** Fixed overlays and high z-index absolute ones found
+   with a grid of `elementFromPoint` probes, the banner elements of about 45
+   known CMPs, open dialogs, and elements with cookie, consent, gdpr, cmp or
+   privacy in their id or class. Each needs consent wording. Sign-in prompts
+   such as Google's One Tap are skipped. In a consent frame the whole body is
+   the container.
+2. **Candidates.** Clickable elements inside a container (button, a,
+   `[role=button]`, input buttons, onclick, the outermost element with a pointer
+   cursor), visible, with a click point inside the viewport where the element
+   itself is on top, checked with `elementFromPoint` through open shadow roots.
+   For a frame, the parent is asked whether the frame is on top at that point
+   too. Wrappers that hold other candidates are dropped.
+3. **Labels.** The visible text, aria-label, title or value, at most 8 words,
+   are matched against vocabulary in en, de, fr, es, it, pt, nl, pl, ru, tr,
+   cs, hu, sv, no, da, fi, el, ja, zh, ko, vi, id, th, ar and hi. The order is
+   subscribe, reject (also negated accepts and "accept only necessary"), save
+   ("save", "confirm", "accept selection"), settings, accept and close. "Accept
+   all" ranks above a bare "OK". A label that repeats inside one UI acts on one
+   purpose or vendor, like the Accept and Reject pairs in Sourcepoint's privacy
+   manager, and is never clicked.
+
+Screen coordinates are `mozInnerScreenX + clientX` and `mozInnerScreenY +
+clientY` at a devicePixelRatio of 1, plus the content-box offsets of the
+iframes around the button. Each frame's own `mozInnerScreenX/Y` cross-checks
+the offsets. A mismatch is noted in the evidence.
+
+### The geometry check
+
+Marionette paints a striped URL bar and a robot icon, and a different toolbar
+height would shift every click. So `find-clicks.py` starts with
+`clicks.py --geometry-check` in the first worker. It paints a page magenta,
+opens it once in a Firefox started like the benchmark starts it
+(`launch-browser.sh firefox <plain profile> <url>`, no Marionette) and once in
+the Marionette-driven one, and finds the magenta box in a screenshot of the
+root window. If the two differ, the difference is added to every recorded
+click (and printed in red). The clicks themselves always use the measured
+geometry of the Marionette run.
+
+On 2026-11-25 both put the page at x 0, y 85, 1440x815, the same as
+`mozInnerScreenX/Y` and `innerWidth/Height`. The Firefox window was 1440x900
+at 0,0 in both. So the correction is 0,0. Every look at every validation site
+measured `0,85` and `1440,815` as well.
+
+### Validation
+
+`find-clicks.py` on 30 sites on 2026-11-25. Every before and after screenshot
+was checked by eye.
+
+| Site | banner | accept | reject | steps | no_reject | On screen |
+| --- | --- | --- | --- | --- | --- | --- |
+| ikea.com/de/de | yes | verified | verified | 1 | | OneTrust box bottom left, gone after "Alle Cookies akzeptieren" and after "Optionale Cookies ablehnen" |
+| spiegel.de | yes | verified | failed | | pay-or-consent | Sourcepoint wall, gone after "Consent and continue". "Preferences" opens a privacy manager with per-purpose buttons and required purposes, no way out |
+| bild.de | yes | verified | failed | | pay-or-consent | Wall with "Alle akzeptieren" and "BILD PUR abonnieren". "Einstellungen" shows required purposes |
+| lemonde.fr | yes | verified | not-found | | pay-or-consent | "Accepter et continuer" or "S'abonner", nothing else |
+| reddit.com | yes | verified | verified | 1 | | Own dialog bottom right (shadow DOM), gone after "Accept All" and after "Reject Optional Cookies" |
+| bbc.co.uk | yes | verified | verified | 1 | | Sourcepoint dialog. Accept takes "I agree" and then BBC's own bar "Yes, I agree". After "I do not agree" BBC's bar stays at the bottom, noted in the evidence |
+| google.com | yes | verified | verified | 1 | | "Bevor Sie zu Google weitergehen", gone after "Alle akzeptieren" and "Alle ablehnen" |
+| youtube.com | yes | verified | verified | 1 | | Consent dialog, gone. The "Your YouTube history is off" box that stays is page content |
+| zeit.de | unsure | n/a | n/a | | | "Ihre Anfrage wurde blockiert", a bot wall |
+| t-online.de | yes | verified | verified | 2 | | Pay-or-consent wall. "individuell anpassen" and then "Alle Zustimmungen widerrufen" leave a clean page, 3 s later. subscribe_offer is yes |
+| chefkoch.de | yes | verified | failed | | pay-or-consent | Wall with "Allen Zwecken zustimmen" or PUR. In "Einstellungen", "Zustimmung widerrufen" goes back to the wall |
+| stackoverflow.com | yes | verified | verified | 1 | | OneTrust box bottom left, gone. Google's One Tap prompt stays and is ignored |
+| booking.com | yes | verified | verified | 1 | | OneTrust bar at the bottom, gone. The Genius sign-in modal and One Tap stay |
+| amazon.de | no | n/a | n/a | | | No cookie box in this run, the shop page loaded |
+| corriere.it | yes | verified | verified | 3 | | Consent wall with "Rifiuta e abbonati". "preferenze", "Deny All", "Save" leave a clean page |
+| aftonbladet.se | yes | verified | failed | | pay-or-consent | Schibsted dialog. "Avvisa personanpassad reklam" is a paid service (49 kr/månad) and leads to annonsval.schibsted.se, so it fails |
+| accuweather.com | yes | verified | verified | 1 | | Ketch panel on the left, gone after "Consent" and "Do Not Consent" |
+| ihg.com | yes | verified | verified | 1 | | Cookie bar at the bottom, gone. A "Cyber Sale" promo modal stays |
+| mcafee.com/de-de | yes | verified | verified | 1 | | Centred dialog, gone |
+| wisc.edu | yes | verified | not-found | | ignorable | Notice bar with only "Accept cookie notice" |
+| ok.ru | yes | verified | verified | 2 | | Bar at the top. "Configure" and "Allow selected" with 0 of 4 toggles on |
+| x.com | yes | verified | verified | 1 | | Bar at the bottom, gone |
+| microsoft.com/de-de | yes | verified | verified | 1 | | Bar at the top, gone. The store chat prompt stays |
+| tiktok.com | yes | verified | verified | 1 | | Blue bar at the bottom, gone. The log-in modal stays |
+| wikipedia.org, github.com, tagesschau.de | no | n/a | n/a | | | Clean |
+| bing.com | yes | verified | verified | 1 | | Bar at the bottom, gone |
+| linkedin.com | yes | verified | verified | 1 | | Bar at the top, gone. Visit B showed no bar the first time and was retried |
+| cloudflare.com | yes | verified | verified | 1 | | OneTrust bar at the bottom, gone |
+
+The first runs got these wrong, and `buttons.js` or `clicks.py` was changed for
+each:
+
+* "User Agreement" counted as accept and Google's One Tap frame as a consent
+  UI on linkedin.com. "agree" and "accept" no longer match "agreement" and
+  "acceptable", and sign-in prompts are skipped.
+* "Allen Zwecken zustimmen" (chefkoch.de) was a settings button because of
+  "Zwecke". An accept with an "all" word now wins over settings.
+* The TCF purpose "Speichern von oder Zugriff auf Informationen" counted as a
+  save button. Labels of more than 8 words are not buttons, and save labels
+  have at most 5.
+* The per-purpose "Reject" buttons in Sourcepoint's privacy manager were
+  clicked as if they rejected everything. Repeated labels are now skipped.
+* corriere.it's settings layer was dropped as an app shell, because it is long
+  and full of vendor links. A container that starts with consent wording is
+  kept. A pointer-cursor wrapper around "Deny All" and "Accept All" became one
+  candidate, and after "Deny All" the path did not save.
+* bbc.co.uk's reject failed because BBC shows its own bar after Sourcepoint
+  closes. The rule for a second consent UI is above.
+* aftonbladet.se's paid reject was not seen as an offer. Prices without
+  decimals (49 kr/månad) now count.
+* amazon.de was still blank after 15 s. A page that is still loading gets
+  until the 30 s load timeout.
+
+### What it cannot tell you
+
+* **Whether the cluster sees the same.** As with the scan, CMPs decide by
+  country, address and A/B test. Spiegel showed its wall in English here,
+  linkedin.com showed its bar in one of two visits, and t-online.de accepted a
+  withdrawal that a later page view may not accept. Coordinates found here
+  hold for the banner seen here.
+* **Timing in the measured run.** The banner appeared 1 to 9 s after the
+  navigation started, and up to 19 s on a busy machine. A replay that clicks
+  too early hits the page behind the banner.
+* **Closed shadow roots and canvas UIs.** Their buttons cannot be read, so the
+  site comes out as `not-found`.
+* **Buttons below the fold of a scrollable dialog.** Only points inside the
+  viewport are clicked, and nothing is scrolled.
+* **Wording outside the vocabulary.** A reject button with an unusual label is
+  missed, and the site gets `not-found` or a settings path. The labels seen are
+  in `clicks.jsonl`.
+* **Whether a reject is complete.** "Verified" means the UI went away. Toggles
+  that a settings layer has on by default (legitimate interest) are counted
+  in the evidence but not switched off, and a CMP may still set cookies.
+* **Blocking.** The backdrop of a promo modal (ihg.com) counts like a consent
+  backdrop, and a large box that leaves the page usable (ikea.com, 30.5 %)
+  counts as blocking by the 30 % rule.
+* **Marionette's traces.** `navigator.webdriver` is true here and not in the
+  measured run. The geometry is the same, see above.
+
+### Runtime
+
+Measured on 2026-11-25 on the 20-core desktop with 4 workers, while a
+`scan.py` run used 4 more browsers. A site with a consent UI took 30 s on
+average (19 to 57 s), up to 48 s on average when the machine was busier. A
+site without one takes about 21 s, mostly the 15 s wait. 30 sites took 3m 50s
+to 5m 35s, so 1000 sites take about 2 to 3 hours with 4 workers. The geometry
+check adds about 30 s per run. The screenshots take about 1.5 MB per site, so
+about 1.5 GB for 1000 sites.

@@ -5,46 +5,56 @@ A single-site run spends about 4 minutes on GMT's own work (baseline, install,
 boot, idle) and on the cluster's cooldown for 40 s of measured phases. Measured
 on machine 15 in October 2026: 60 s baseline, 44 s install, 18 s boot, 60 s
 idle and 80 s of flow per site, about 5.5 minutes per site and scenario. A batch
-pays the fixed part once and then runs each site in about 85 s: 25 s for a
-fresh profile and the cache warmup, 11 s to start Firefox, the measured 33 s
-visit and 7 s scroll, a screenshot, quitting Firefox, and GMT's 1 s between
-phases.
+pays the fixed part once and then runs each visit in about 80 s (measured on
+machine 15 on 2026-11-25): about 21 s for a fresh profile and the cache warmup,
+12 s to start Firefox, the measured 33 s visit and 7 s scroll, a screenshot,
+quitting Firefox, and GMT's 1 s between phases.
 
-    # 1000 sites in batches of 50: writes parrot/batches/<name>-01.yml ... -20.yml
-    tools/batch.py generate sites_tranco_top1000.txt --name tranco1000
+    # every site of the list, with the consent clicks banner-scan found
+    tools/batch.py generate sites_tranco_top1000.txt --name tranco1000 \\
+        --clicks sites_tranco_clicks.csv
 
     # submit them all to machine 15, review screenshots to the server
     tools/batch.py submit parrot/batches/tranco1000-*.yml \\
         --screenshot-url https://shots.example.org/upload
 
-    # a quick local check with three sites
+    # a quick local check with three sites, no clicks
     tools/batch.py generate sites.txt --name smoke --limit 3
 
-    # after the runs: one row per site with its RESULT, failed ones as a list
+    # after the runs: one row per visit with its RESULT, failed ones as a list
     tools/batch.py results parrot/batches/tranco1000-*.yml \\
         --csv results.csv --failed-list remeasure.txt
 
 The generated files are committed like any scenario, because the cluster
 clones the repository. Do not edit them by hand, regenerate them.
 
-Each site gets six flow steps, all through parrot/common/batch-site.sh:
+VISITS. Firefox runs without any consent add-on. Every site gets a visit
+"none", which leaves a cookie banner alone. A site whose banner
+banner-scan/find-clicks.py could answer also gets a visit "accept", and a visit
+"reject" if it found a verified reject path. Those visits click the buttons
+with Parrot, at the same time after the navigation for both, so the two can be
+compared. The visits of one site run back to back, in an order that rotates
+with the site's position, so that no variant is always first.
 
-    NNN <host> prepare   hidden    fresh profile from the template, warmup
-    NNN <host> start     hidden    start Firefox on about:blank
-    NNN <host> visit     MEASURED  Alt+Home to the site, idle to 33 s
-    NNN <host> shot      hidden    review screenshot and upload
-    NNN <host> scroll    MEASURED  25 wheel ticks, idle to 7 s
-    NNN <host> close     hidden    quit Firefox, report the site's RESULT note
+Each visit gets six flow steps, all through parrot/common/batch-site.sh:
 
-A site that fails never fails the run. Its RESULT note says so, see
+    NNNN <host> <variant> prepare   hidden    plain profile, warmup with the clicks
+    NNNN <host> <variant> start     hidden    start Firefox on about:blank
+    NNNN <host> <variant> visit     MEASURED  Alt+Home, the clicks, idle to 33 s
+    NNNN <host> <variant> shot      hidden    review screenshot and upload
+    NNNN <host> <variant> scroll    MEASURED  25 wheel ticks, idle to 7 s
+    NNNN <host> <variant> close     hidden    quit Firefox, report the RESULT note
+
+A visit that fails never fails the run. Its RESULT note says so, see
 batch-site.sh, and its measured phases are then an idle machine.
 
-GMT's limit is the user's total_duration, 7600 s for user 8 on 2026-11-25. 50
-sites take about 71 minutes of flow, which leaves room for slow sites.
+GMT's limit is the user's total_duration, 7600 s for user 8 on 2026-11-25. A
+batch holds whole sites and at most 75 visits, about 100 minutes of flow.
 """
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import shlex
@@ -63,11 +73,19 @@ from submit import GMT_PYTHON, REPO_URL, SUBMIT_SCRIPT, read_urls  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BATCH_DIR = REPO_ROOT / 'parrot' / 'batches'
 DEFAULT_MACHINE_ID = 15
-DEFAULT_SIZE = 50
-VARIANT = 'firefox-com'
+DEFAULT_VISITS = 75
+SECONDS_PER_VISIT = 80
+
+# When the clicks happen, in seconds after the navigation. The same for the
+# accept and the reject visit of a site, so the two are comparable. At least
+# CLICK_MIN, and two seconds after the banner appeared in the scan, rounded up.
+CLICK_MIN = 6
+CLICK_MARGIN = 2
+CLICK_MAX = 20
 
 # GMT's schema checker accepts only these characters in a flow step's name.
 FLOW_NAME_OK = re.compile(r'^[\.\s0-9a-zA-Z_\(\)-]+$')
+CLICKS_OK = re.compile(r'^\d+,\d+(;\d+,\d+){0,2}$')
 
 STAGES = [
     # (stage, hidden)
@@ -101,18 +119,63 @@ def check_url(url):
         raise ValueError(f'URL contains a quote or whitespace: {url!r}')
 
 
-def render(batch_name, index, count, sites, first_position, source):
+def read_clicks(path):
+    """url -> row of banner-scan/find-clicks.py's clicks.csv."""
+    rows = {}
+    with open(path, newline='', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            rows[row['url']] = row
+    return rows
+
+
+def plan_site(position, url, clicks):
+    """The visits of one site: a list of (variant, clicks, click_at)."""
+    row = clicks.get(url) if clicks else None
+    visits = [('none', '', None)]
+    if row and row.get('banner') == 'yes':
+        appears = float(row['banner_appears_s'] or 0)
+        click_at = min(CLICK_MAX, max(CLICK_MIN, math.ceil(appears + CLICK_MARGIN)))
+        # find-clicks.py notes "GEOMETRY MISMATCH: A banner ...; B banner ..."
+        # when the page did not start at the measured run's 0,85 1440x815, for
+        # example under a browser notification bar. Visit A found the accept
+        # clicks, visit B the reject clicks. A mismatch only after the click
+        # (a page that opens a side panel) leaves the coordinates valid. A
+        # reject in several clicks is not trusted then, the bar may have come
+        # between two of them.
+        evidence = row.get('evidence', '')
+        mismatch = evidence.split(' | ')[0] if evidence.startswith('GEOMETRY MISMATCH') else ''
+        multi = row.get('reject_steps', '') not in ('', '1')
+        for variant, looks in (('accept', ['A banner']),
+                               ('reject', ['B banner'] + (['B after reject'] if multi else []))):
+            coords = row.get(f'{variant}_clicks', '')
+            if any(look in mismatch for look in looks):
+                continue
+            if row.get(variant) == 'verified' and coords:
+                if not CLICKS_OK.match(coords):
+                    raise ValueError(f'{url}: {variant}_clicks {coords!r} is not x,y;x,y')
+                visits.append((variant, coords, click_at))
+    # Rotate, so that each variant comes first for a third of the sites.
+    k = position % len(visits)
+    return visits[k:] + visits[:k]
+
+
+def render(batch_name, index, count, sites, source):
+    """sites: list of (position, url, visits)."""
+    n_visits = sum(len(v) for _, _, v in sites)
+    first, last = sites[0][0], sites[-1][0]
     out = []
     w = out.append
     w('---')
     w(f'# GENERATED by tools/batch.py from {source}, batch {index} of {count}:')
-    w(f'# list positions {first_position} to {first_position + len(sites) - 1}. Do not edit, regenerate.')
+    w(f'# list positions {first} to {last}, {len(sites)} sites, {n_visits} visits. Do not edit, regenerate.')
     w('#')
-    w('# Measures each site in a real Firefox 155 with Consent-O-Matic, driven by')
-    w('# Parrot, from a warm squid cache. The README section "Batch runs" says how.')
+    w('# Measures each site in a real Firefox 155 without consent add-on, driven by')
+    w('# Parrot, from a warm squid cache. Sites with a cookie banner are visited up')
+    w('# to three times: banner left alone, accepted and rejected, with real clicks.')
+    w('# The README section "Batch runs" says how.')
     w(f'name: {q(f"1000 Websites Parrot Firefox - {batch_name} {index:02d}/{count:02d}")}')
     w('author: Didi Hoffmann <didi@green-coding.io>')
-    w(f'description: {q(f"{len(sites)} sites, each: warmup, load and idle 30 s, scroll 5 s, in Firefox with Consent-O-Matic")}')
+    w(f'description: {q(f"{len(sites)} sites in {n_visits} visits, each: warmup, load and idle 30 s, scroll 5 s, in Firefox, cookie banners left, accepted or rejected")}')
     w('')
     w('custom_metrics:')
     w('  website_load:')
@@ -133,11 +196,10 @@ def render(batch_name, index, count, sites, first_position, source):
     w('    depends_on:')
     w('      - squid')
     w('    environment:')
-    w('      # Each site passes its own PARROT_URL on the command line. This one')
+    w('      # Each visit passes its own PARROT_URL on the command line. This one')
     w('      # only satisfies the scripts that insist on the variable being set.')
     w('      PARROT_URL: about:blank')
     w('      SCREENSHOT_URL: __GMT_VAR_SCREENSHOT_URL__')
-    w(f'      PARROT_VARIANT: {VARIANT}')
     w('      SCREEN_SIZE: 1440x900x24')
     w('      RESOLUTION: 1440x900')
     w('      WINDOW_X: 0')
@@ -151,37 +213,34 @@ def render(batch_name, index, count, sites, first_position, source):
     w('    setup-commands:')
     w('      - command: bash /tmp/repo/parrot/common/firefox-policies.sh')
     w('      # Firefox 155 maps its window as WM_CLASS ("Navigator", "firefox").')
+    w('      # The consent clicks rely on this pin: banner-scan/find-clicks.py')
+    w('      # found the coordinates in the same 1440x900 window at 0,0.')
     w('      - command: bash /tmp/repo/parrot/common/pin-windows.sh Navigator 1440 900')
     w('      - command: bash /usr/local/bin/entrypoint.sh')
     w('')
     w('flow:')
-    w('  # Once per run. Without the template no site can run, so this one is')
-    w('  # allowed to fail the run.')
-    w('  - name: Build the Firefox template profile')
-    w('    container: window-container')
-    w('    hidden: true')
-    w('    commands:')
-    w('      - type: console')
-    w('        command: bash /tmp/repo/parrot/common/make-template-profile.sh')
-    for offset, url in enumerate(sites):
-        n = first_position + offset
+    for n, url, visits in sites:
         host = host_of(url)
         w('')
-        w(f'  # {n}: {url}')
-        for stage, hidden in STAGES:
-            name = f'{n:04d} {host} {stage}'
-            if not FLOW_NAME_OK.match(name):
-                raise ValueError(f'flow name GMT would reject: {name!r}')
-            w(f'  - name: {q(name)}')
-            w('    container: window-container')
-            if hidden:
-                w('    hidden: true')
-            w('    commands:')
-            w('      - type: console')
-            w(f"        command: {q(f'PARROT_URL={shlex.quote(url)} bash /tmp/repo/parrot/common/batch-site.sh {stage} {n}')}")
-            w('        shell: bash')
-            w('        read-notes-stdout: true')
-            w('        ignore-errors: true')
+        w(f'  # {n}: {url}, visits: {", ".join(v for v, _, _ in visits)}')
+        for variant, coords, click_at in visits:
+            env = f'PARROT_URL={shlex.quote(url)}'
+            if coords:
+                env += f' PARROT_CLICKS={shlex.quote(coords)} PARROT_CLICK_AT={click_at}'
+            for stage, hidden in STAGES:
+                name = f'{n:04d} {host} {variant} {stage}'
+                if not FLOW_NAME_OK.match(name):
+                    raise ValueError(f'flow name GMT would reject: {name!r}')
+                w(f'  - name: {q(name)}')
+                w('    container: window-container')
+                if hidden:
+                    w('    hidden: true')
+                w('    commands:')
+                w('      - type: console')
+                w(f"        command: {q(f'{env} bash /tmp/repo/parrot/common/batch-site.sh {stage} {n} {variant}')}")
+                w('        shell: bash')
+                w('        read-notes-stdout: true')
+                w('        ignore-errors: true')
     return '\n'.join(out) + '\n'
 
 
@@ -200,23 +259,45 @@ def cmd_generate(args):
         seen[host] = position
     if not re.match(r'^[a-z0-9][a-z0-9-]*$', args.name):
         sys.exit('--name must be lower case letters, digits and dashes')
+    clicks = read_clicks(args.clicks) if args.clicks else {}
+    if args.clicks:
+        missing = [u for u in urls if u not in clicks]
+        if missing:
+            print(f'{len(missing)} sites are not in {args.clicks} and get only the visit "none", '
+                  f'e.g. {missing[0]}', file=sys.stderr)
 
-    chunks = [urls[i:i + args.size] for i in range(0, len(urls), args.size)]
+    sites = [(position, url, plan_site(position, url, clicks)) for position, url in enumerate(urls, 1)]
+    batches, current = [], []
+    for site in sites:
+        if current and sum(len(v) for _, _, v in current) + len(site[2]) > args.visits:
+            batches.append(current)
+            current = []
+        current.append(site)
+    if current:
+        batches.append(current)
+
     BATCH_DIR.mkdir(parents=True, exist_ok=True)
-    source = Path(args.list).name
+    source = Path(args.list).name + (f' and {Path(args.clicks).name}' if args.clicks else '')
     written = []
-    for index, chunk in enumerate(chunks, 1):
-        first = (index - 1) * args.size + 1
+    for index, batch in enumerate(batches, 1):
         path = BATCH_DIR / f'{args.name}-{index:02d}.yml'
-        path.write_text(render(args.name, index, len(chunks), chunk, first, source), encoding='utf-8')
-        written.append(path)
-    print(f'{len(urls)} sites in {len(chunks)} batches of up to {args.size}:')
-    for path in written:
-        print(f'  {path.relative_to(REPO_ROOT)}')
-    minutes = args.size * 85 / 60
-    print(f'about {minutes:.0f} min of flow per full batch, {len(urls) * 85 / 3600:.1f} h for all, '
-          f'plus about 4 min of GMT setup per batch')
+        path.write_text(render(args.name, index, len(batches), batch, source), encoding='utf-8')
+        written.append((path, batch))
+
+    counts = {}
+    for _, _, visits in sites:
+        for variant, _, _ in visits:
+            counts[variant] = counts.get(variant, 0) + 1
+    total = sum(counts.values())
+    print(f'{len(sites)} sites, {total} visits ({", ".join(f"{k} {v}" for k, v in counts.items())}) '
+          f'in {len(batches)} batches of up to {args.visits} visits:')
+    for path, batch in written:
+        print(f'  {path.relative_to(REPO_ROOT)}  {len(batch)} sites, {sum(len(v) for _, _, v in batch)} visits')
+    print(f'about {args.visits * SECONDS_PER_VISIT / 60:.0f} min of flow per full batch, '
+          f'{total * SECONDS_PER_VISIT / 3600:.1f} h for all, plus about 6 min of GMT setup per batch')
     return 0
+
+
 
 
 def cmd_submit(args):
@@ -260,7 +341,9 @@ def cmd_submit(args):
     return 0
 
 
-RESULT_NOTE = re.compile(r'^batch-site (\d+) RESULT (\S+) (\S+) ?(.*)$')
+# "batch-site 12-accept RESULT ok <url>". The trial batch of 2026-11-25 wrote
+# "batch-site 12 RESULT ...", without a variant, which reads as variant "com".
+RESULT_NOTE = re.compile(r'^batch-site (\d+)(?:-(none|accept|reject))? RESULT (\S+) (\S+) ?(.*)$')
 
 
 def gmt_token():
@@ -318,15 +401,16 @@ def cmd_results(args):
             match = RESULT_NOTE.match(note[2])
             if match:
                 found += 1
-                n, status, url, reason = match.groups()
-                rows.append({'position': int(n), 'url': url, 'result': status, 'reason': reason,
+                n, variant, status, url, reason = match.groups()
+                rows.append({'position': int(n), 'variant': variant or 'com', 'url': url,
+                             'result': status, 'reason': reason,
                              'batch': filename, 'run_id': run['id'], 'run_failed': run['failed']})
         if run['failed'] or not found:
             print(f'{filename}: run {run["id"]} failed={run["failed"]}, {found} RESULT notes', file=sys.stderr)
-    rows.sort(key=lambda r: r['position'])
+    rows.sort(key=lambda r: (r['position'], r['variant']))
 
     out = sys.stdout if args.csv == '-' else open(args.csv, 'w', newline='', encoding='utf-8')
-    writer = csv.DictWriter(out, fieldnames=['position', 'url', 'result', 'reason', 'batch', 'run_id', 'run_failed'])
+    writer = csv.DictWriter(out, fieldnames=['position', 'variant', 'url', 'result', 'reason', 'batch', 'run_id', 'run_failed'])
     writer.writeheader()
     writer.writerows(rows)
     if out is not sys.stdout:
@@ -337,7 +421,8 @@ def cmd_results(args):
         counts[row['result']] = counts.get(row['result'], 0) + 1
     print('results: ' + ', '.join(f'{k} {v}' for k, v in sorted(counts.items())), file=sys.stderr)
     if args.failed_list:
-        failed = [r['url'] for r in rows if r['result'] != 'ok']
+        # A site is remeasured as a whole when any of its visits failed.
+        failed = list(dict.fromkeys(r['url'] for r in rows if r['result'] != 'ok'))
         Path(args.failed_list).write_text(
             '# Sites whose batch run did not end with RESULT ok, from tools/batch.py results.\n'
             + ''.join(f'{u}\n' for u in failed), encoding='utf-8')
@@ -353,7 +438,10 @@ def main():
     g = sub.add_parser('generate', help='write parrot/batches/<name>-NN.yml from a URL list')
     g.add_argument('list', help='one URL per line, # comments and blank lines ignored')
     g.add_argument('--name', required=True, help='batch name, used in file and run names')
-    g.add_argument('--size', type=int, default=DEFAULT_SIZE, help=f'sites per run (default {DEFAULT_SIZE})')
+    g.add_argument('--clicks', help="banner-scan/find-clicks.py's clicks.csv: sites with verified consent "
+                                    'clicks also get the visits accept and reject')
+    g.add_argument('--visits', type=int, default=DEFAULT_VISITS,
+                   help=f'most visits per run, whole sites only (default {DEFAULT_VISITS})')
     g.add_argument('--limit', type=int, help='only the first N sites of the list')
     g.set_defaults(func=cmd_generate)
 

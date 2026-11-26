@@ -70,7 +70,40 @@ bash "${HERE}/launch-browser.sh" "$BROWSER" "$PROFILE" "$PARROT_URL" \
     >/tmp/parrot-warmup.log 2>&1 &
 warmup_pid=$!
 
-sleep "$WARMUP_SECONDS"
+# CONSENT CLICKS. A batch visit that accepts or rejects a cookie banner sets
+# PARROT_CLICKS ("x,y;x,y", screen coordinates from banner-scan/find-clicks.py)
+# and PARROT_CLICK_AT (seconds after the navigation). The warmup makes the same
+# clicks, so the proxy also holds what the page loads after that answer. An
+# accepted page loads its trackers and ads only after the click, and without
+# this they would come from the origin inside the measured phase.
+#
+# The page here is on the command line, so its navigation starts when the
+# window appears. The window is pinned to the same place as the measured one
+# (same class), so the same coordinates hit the same button. xdotool sends the
+# same XTest events Parrot's replay does.
+if [[ -n "${PARROT_CLICKS:-}" ]]; then
+    started=$SECONDS
+    if ! timeout 30 xdotool search --sync --onlyvisible --class firefox >/dev/null 2>&1; then
+        log "WARNING: no Firefox window within 30 s, no consent clicks in the warmup"
+    else
+        sleep "${PARROT_CLICK_AT:-8}"
+        IFS=';' read -ra clicks <<<"$PARROT_CLICKS"
+        for c in "${clicks[@]}"; do
+            log "consent click at ${c}"
+            xdotool mousemove "${c%,*}" "${c#*,}"
+            sleep 0.3
+            xdotool click 1
+            sleep 1.5
+        done
+    fi
+    # As long as an unclicked warmup, and 10 s after the last click at least.
+    elapsed=$(( SECONDS - started ))
+    rest=$(( WARMUP_SECONDS - elapsed ))
+    (( rest < 10 )) && rest=10
+    sleep "$rest"
+else
+    sleep "$WARMUP_SECONDS"
+fi
 
 log "stopping the warmup browser"
 kill "$warmup_pid" 2>/dev/null || true

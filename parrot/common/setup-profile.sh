@@ -95,9 +95,12 @@ firefox)
     # not resolve names itself - squid does - and leaving DoH on adds a second,
     # unproxied network path that only sometimes runs.
     #
-    # PARROT_CONSENT=consent-o-matic additionally installs the Consent-O-Matic
-    # add-on from parrot/firefox/ into the profile, see the block after the
-    # prefs. Unset or "none", the profile has no add-on.
+    # PARROT_CONSENT picks the consent add-ons from parrot/firefox/ that go
+    # into the profile, see the block after the prefs:
+    #   none (or unset)          no add-on
+    #   consent-o-matic          Consent-O-Matic, answers banners with reject
+    #   idcac                    I still don't care about cookies, accepts or hides
+    #   consent-o-matic+idcac    both
     consent="${PARROT_CONSENT:-none}"
     python3 - "$PROFILE/user.js" "$PARROT_URL" "$PROXY_HOST" "$PROXY_PORT" "$consent" <<'PY'
 import json, sys
@@ -197,6 +200,12 @@ prefs = [
     # speech-dispatcher. Seen by banner-scan/ on nytimes.com, ebay.de and
     # others. Firefox 155's SpeechDispatcherParent.sys.mjs checks this pref.
     ("media.webspeech.synth.dont_notify_on_error",      True),
+    # A page that asks for DRM (Spotify, Prime Video, SoundCloud, CNN, Cisco
+    # and others) gets a "You must enable DRM" bar, 57 px of viewport, because
+    # Widevine is never downloaded with the GMP updates off. Seen by
+    # banner-scan/find-clicks.py on 19 of the 1000 sites. With this pref
+    # EncryptedMediaParent.sys.mjs of Firefox 155 shows no EME bar at all.
+    ("browser.eme.ui.enabled",                          False),
 ]
 
 # Add-ons dropped into <profile>/extensions/ are in the profile scope, which
@@ -204,13 +213,14 @@ prefs = [
 # autoDisableScopes enables them without asking. The add-on keeps its MV3 host
 # permission <all_urls>: checked in extension-preferences.json of a profile
 # built this way.
-if consent == "consent-o-matic":
+if consent in ("consent-o-matic", "idcac", "consent-o-matic+idcac"):
     prefs += [
         ("extensions.autoDisableScopes",                0),
         ("extensions.enabledScopes",                    15),
     ]
 elif consent != "none":
-    sys.exit(f"[setup-profile] unknown PARROT_CONSENT={consent!r} (expected none or consent-o-matic)")
+    sys.exit(f"[setup-profile] unknown PARROT_CONSENT={consent!r} "
+             "(expected none, consent-o-matic, idcac or consent-o-matic+idcac)")
 
 with open(path, "w", encoding="utf-8") as fh:
     fh.write("// Written by websites/common/setup-profile.sh. Do not edit by hand.\n")
@@ -227,17 +237,32 @@ PY
     # the add-on opens its options page in a new tab and downloads its rules
     # from GitHub. common/make-template-profile.sh does that first start once,
     # and common/fresh-profile.sh copies the result for every site.
-    if [[ "$consent" == "consent-o-matic" ]]; then
-        xpi="${PARROT_COM_XPI:-/tmp/repo/parrot/firefox/consent-o-matic-1.1.5.xpi}"
-        want='a2119abc329638d6e7af1ab4e5548a348465e02eec11de08dee0af84919923dc'
+    install_xpi() {
+        local xpi="$1" want="$2" id="$3" label="$4" have
         have="$(sha256sum "$xpi" | cut -d' ' -f1)"
         if [[ "$have" != "$want" ]]; then
             echo "[setup-profile] FATAL: $xpi has sha256 $have, expected $want" >&2
             exit 1
         fi
         mkdir -p "$PROFILE/extensions"
-        cp "$xpi" "$PROFILE/extensions/gdpr@cavi.au.dk.xpi"
-        log "installed Consent-O-Matic 1.1.5 into $PROFILE/extensions"
+        cp "$xpi" "$PROFILE/extensions/${id}.xpi"
+        log "installed ${label} into $PROFILE/extensions"
+    }
+    if [[ "$consent" == consent-o-matic* ]]; then
+        install_xpi "${PARROT_COM_XPI:-/tmp/repo/parrot/firefox/consent-o-matic-1.1.5.xpi}" \
+            a2119abc329638d6e7af1ab4e5548a348465e02eec11de08dee0af84919923dc \
+            'gdpr@cavi.au.dk' 'Consent-O-Matic 1.1.5'
+    fi
+    # I still don't care about cookies 1.1.9 (OhMyGuus, GPL-3.0), the signed
+    # build from addons.mozilla.org, pinned by checksum. Its rules are inside
+    # the add-on and it opens no tab on its first start. It talks to its server
+    # only when a user reports a site by hand. Unlike Consent-O-Matic it does
+    # not refuse consent: it hides banners, accepts them where hiding breaks the
+    # page, and blocks some banner scripts from loading at all.
+    if [[ "$consent" == *idcac ]]; then
+        install_xpi "${PARROT_IDCAC_XPI:-/tmp/repo/parrot/firefox/idcac-1.1.9.xpi}" \
+            42922f61cfc53e2103e492ddbe5736caf503d9dad4a88690efc4c64dac10d5c7 \
+            'idcac-pub@guus.ninja' 'I still dont care about cookies 1.1.9'
     fi
     ;;
 

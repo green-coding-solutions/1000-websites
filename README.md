@@ -359,98 +359,147 @@ The single-site scenarios above spend most of a run on GMT itself. On machine
 60 s baseline, 44 s installation, 18 s boot, 60 s idle, 80 s of flow and the
 cluster's cooldown. 208 sites in both scenarios took a month of queue.
 
-A batch run measures up to 50 sites one after the other in one GMT run, so
-the baseline, installation, boot and idle are paid once per batch. Per site it
-runs about 73 s locally (85 s with the cluster's 1 s between phases): a fresh
-profile and the 20 s cache warmup, starting Firefox, the measured 33 s visit
-and 7 s scroll, a screenshot and quitting Firefox. 1000 sites are 20 runs of
-about 75 minutes each, roughly a day on one machine.
+A batch run measures many visits one after the other in one GMT run, so the
+baseline, installation, boot and idle are paid once per batch. A visit takes
+80 s on machine 15: a fresh profile and the 20 s cache warmup, starting
+Firefox, the measured 33 s visit and 7 s scroll, a screenshot and quitting
+Firefox. The first trial batch, 50 sites on 2026-11-25, took 70 minutes, and
+every one of its visit and scroll phases lasted 33.07 to 33.08 s and 7.07 to
+7.09 s.
 
 ```bash
-# write parrot/batches/tranco1000-01.yml ... -20.yml from the list
-tools/batch.py generate sites_tranco_top1000.txt --name tranco1000
+# find and verify the consent clicks of every site (about 3 h locally)
+banner-scan/find-clicks.py sites_tranco_top1000.txt
+
+# write parrot/batches/tranco1000-NN.yml from the list and the clicks
+tools/batch.py generate sites_tranco_top1000.txt --name tranco1000 \
+  --clicks sites_tranco_clicks.csv
 
 # commit and push them, then submit to machine 15
 tools/batch.py submit parrot/batches/tranco1000-*.yml \
   --screenshot-url https://shots.example.org/upload
 
-# a local check with three sites, then run it like any scenario
-tools/batch.py generate sites.txt --name smoke --limit 3
+# after the runs: every visit's RESULT, failed sites as a list to remeasure
+tools/batch.py results parrot/batches/tranco1000-*.yml \
+  --csv results.csv --failed-list remeasure.txt
 ```
 
 The generated files are ordinary usage scenarios and are committed, because the
-cluster clones the repository. Regenerate them, do not edit them.
+cluster clones the repository. Regenerate them, do not edit them. A batch holds
+whole sites and at most 75 visits, about 100 minutes, which stays under user
+8's `total_duration` of 7600 s.
 
-### What is measured
+### What is measured: the cost of a cookie banner answer
 
-Firefox 155.0.1 from `ribalba/parrot-browsers:v1`, driven by Parrot in the
-container's Xvfb, through the same squid cache as the other scenarios, with
-the window pinned to 1440x900. The measured phases per site are
-`NNNN <host> visit` (Alt+Home to the site, idle to 33 s) and
-`NNNN <host> scroll` (25 wheel ticks, idle to 7 s), the same flow and the same
-`common/phase-clock.sh` deadlines as the Chrome scenarios. `NNNN` is the site's
-position in the list. Everything else is in hidden phases, see
-`parrot/common/batch-site.sh`.
+Firefox 155.0.1 from `ribalba/parrot-browsers:v1`, without any add-on, driven
+by Parrot in the container's Xvfb, through the same squid cache as the other
+scenarios, with the window pinned to 1440x900 at 0,0. Every site is visited up
+to three times, back to back in the same batch:
 
-Firefox runs with the **Consent-O-Matic** add-on (CAVI, Aarhus University,
-version 1.1.5 from addons.mozilla.org, pinned by checksum in
-`parrot/firefox/`). It answers consent banners of the CMPs it has rules for
-with "reject all", so a site is measured in the state a user who refuses
-tracking gets. Firefox's own cookie banner handling, which was the first
-choice, does not exist any more: Mozilla removed it (bug 2058143), and the
-Firefox 155.0.1 in the image has neither its prefs nor its rules list. The
-add-on's rules come from the master branch of its GitHub repository, which was
-at commit 8ca8500d26 (2025-11-07) on 2026-11-25. Each run logs the commit it
-got. Banners it has no rule for stay, and so do pay-or-consent walls such as
-spiegel.de's, which offer no reject button.
+| Visit | What Parrot does with the cookie banner |
+| --- | --- |
+| `none` | Nothing. The page is measured in the state before anyone answers. Every site gets this visit. |
+| `accept` | Clicks the banner's accept button. |
+| `reject` | Clicks the reject path, one to three clicks (for example "Settings", then "Reject all"). |
 
-Every site starts from a copy of one template profile per run.
-`parrot/common/make-template-profile.sh` builds it once: it starts Firefox on
-example.com, so that the add-on downloads its rules and opens its first-run
-tab, quits Firefox and deletes everything example.com left. Without that, the
-add-on would open a tab over the page and download about 200 rule files inside
-the first measured phase of every site. The copy has no cookies, no site
-storage and an empty HTTP cache, so each measured visit still starts cold.
+The clicks are real X input like every other Parrot interaction, a
+`mousemove` and a `mousedown` in the visit's macro, which
+`parrot/common/batch-site.sh` writes for each visit. They happen at the same
+time after the navigation in the accept and the reject visit of a site: two
+seconds after the banner appeared in the scan, at least 6 s and at most 20 s.
+The difference between the two visits is the energy a site spends on consent.
+The visits of one site run minutes apart, so changes to the site and drift of
+the machine hit all of them alike, and their order rotates with the site's
+position so that no variant is always first.
 
-Two more things were switched off because they were seen on screen or in the
-profile while testing on 2026-11-25. Firefox 155 ignores the update prefs and
-put an "Update available" panel over the page, so
+The coordinates come from `banner-scan/find-clicks.py`. It loads every site in
+the same Firefox in the same pinned window, finds the accept and reject buttons
+of the banner, also inside iframes and shadow DOM, clicks them with real X
+clicks and keeps only paths after which the banner was gone and the browser was
+still on the site. Its `clicks.csv` is the input of `tools/batch.py generate
+--clicks`. A site without a verified accept or reject path gets only the visits
+it has.
+
+The warmup before each visit makes the same clicks at the same time, so squid
+also holds what a page loads after the answer. An accepted page fetches its
+trackers and ads only after the click, and without that they would come from
+the origin inside the measured phase.
+
+The measured phases per visit are `NNNN <host> <variant> visit` (Alt+Home, the
+clicks, idle to 33 s) and `NNNN <host> <variant> scroll` (25 wheel ticks, idle
+to 7 s), with the same `common/phase-clock.sh` deadlines as the Chrome
+scenarios. `NNNN` is the site's position in the list.
+
+### Sites that cannot be used without accepting
+
+`find-clicks.py` also records, for every banner, whether it blocks the page and
+whether there is any way to say no. A site without a reject path is one of
+
+| `no_reject` | |
+| --- | --- |
+| `pay-or-consent` | The alternative to accepting is a subscription (spiegel.de, bild.de, lemonde.fr) |
+| `consent-wall` | No reject, and the banner blocks the page until it is answered |
+| `ignorable` | No reject, but the page can be used with the banner on screen |
+
+The first two are the sites that cannot be used without accepting. The number
+of clicks a reject path needs is in `reject_steps`, so the extra work of saying
+no is in the data as well.
+
+### Why no consent add-on
+
+The first design answered banners with an add-on. Firefox's own cookie banner
+handling would have been the first choice, but it does not exist any more:
+Mozilla removed it (bug 2058143), and the Firefox 155.0.1 in the image has
+neither its prefs nor its rules list. Consent-O-Matic 1.1.5 (CAVI, Aarhus
+University) rejected the banners of about 62 % of the 1000 sites in the
+pre-scan and left 289 with a banner, and "I still don't care about cookies"
+1.1.9 cleared more but mostly by hiding banners, so its consent state is not
+defined. An add-on also clicks from inside the page and adds its own CPU work
+to every measurement. Both add-ons stay pinned in `parrot/firefox/` for the
+banner pre-scan (`PARROT_CONSENT` in `setup-profile.sh`), and the trial batch
+`parrot/batches/trial-01.yml` ran with Consent-O-Matic.
+
+Some background work of Firefox 155 is switched off because it was seen on
+screen or in the profile while testing on 2026-11-25. Firefox 155 ignores the
+update prefs and put an "Update available" panel over the page, so
 `parrot/common/firefox-policies.sh` writes `DisableAppUpdate` and related
-enterprise policies into the image's Firefox at container start. And the
-translations panel opened over every German page, and the new tab page fetched
-weather, sponsored tiles and news, which `setup-profile.sh` now turns off by
-pref.
+enterprise policies into the image's Firefox at container start. The
+translations panel opened over every German page, the new tab page fetched
+weather, sponsored tiles and news, and a page using the speech API got a
+"Speech Dispatcher library is missing" bar, which `setup-profile.sh` now turns
+off by pref. The same goes for the "You must enable DRM" bar on about 19 sites
+with video (Spotify, Prime Video, CNN, Cisco), which comes because Widevine is
+never downloaded with the GMP updates off. `browser.eme.ui.enabled` is false.
+Both bars took 57 px of the viewport and moved the consent buttons.
 
-### A failing site does not fail the batch
+### A failing visit does not fail the batch
 
-Every per-site step exits 0. What happened is a GMT note instead, and every
-site ends with exactly one of
+Every per-visit step exits 0. What happened is a GMT note instead, and every
+visit ends with exactly one of
 
 ```
-batch-site <n> RESULT ok <url>
-batch-site <n> RESULT failed:<stage> <url> <reason>
+batch-site <n>-<variant> RESULT ok <url>
+batch-site <n>-<variant> RESULT failed:<stage> <url> <reason>
 ```
 
-Only sites with `ok` have measured phases worth reading. A site whose browser
+Only visits with `ok` have measured phases worth reading. A visit whose browser
 never came up still runs its two measured phases, idling to the deadlines, so
-the sites after it keep their timing, and its numbers are an idle machine.
-Only the template step can fail the run, because without it no site can be
-measured.
+the visits after it keep their timing, and its numbers are an idle machine.
 
 ### Before a batch: the banner pre-scan
 
-`banner-scan/` loads every site of a list in the same Firefox, once plain and
-once with Consent-O-Matic, and reports which sites still show a banner with the
-add-on. Those are the ones to fix before spending cluster time. See
-`banner-scan/README.md`.
+`banner-scan/scan.py` loads every site of a list in the same Firefox, plain and
+with an add-on, and reports which sites show a banner. `find-clicks.py` then
+finds the clicks. See `banner-scan/README.md`.
 
 ### After a batch: review and remeasure
 
-Each site uploads its screenshot with driver `parrot` and variant
-`firefox-com` to `screenshot-server/`. Tag each site there as ok, cookie
-banner, bot wall, error page, blank or other, then export the tagged URLs as a
-list and feed it to `tools/batch.py generate` for a remeasurement. See
-`screenshot-server/README.md`.
+Each visit uploads its screenshot with driver `parrot` and variant
+`firefox-none`, `firefox-accept` or `firefox-reject` to `screenshot-server/`,
+so the gallery shows the three states of a site side by side. Tag each site
+there as ok, cookie banner, bot wall, error page, blank or other, then export
+the tagged URLs as a list and feed it to `tools/batch.py generate` for a
+remeasurement. See `screenshot-server/README.md`.
 
 ### The site list
 
